@@ -1,12 +1,12 @@
 {
-  "name": "@turbot/fn",
+  "name": "@turbot/guardrails-fn",
   "author": "Turbot HQ, Inc",
-  "version": "5.24.0",
-  "description": "Turbot Fn.",
+  "version": "5.0.0",
+  "description": "Guardrails Fn.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/turbot/fn.git"
+    "url": "https://github.com/turbot/guardrails-fn.git"
   },
   "main": "index.js",
   "scripts": {
