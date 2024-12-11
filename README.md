@@ -1,4 +1,4 @@
-# @turbot/fn
+# @turbot/guardrails-fn
 
 Turbot wrapper for control functions.
 
@@ -11,7 +11,7 @@ Turbot wrapper for control functions.
 This package returns a function with the signature expected by AWS Lambda for node. It should
 be assigned to the handler entry point for the control.
 
-    const tfn = require("@turbot/fn");
+    const tfn = require("@turbot/guardrails-fn");
     exports.control = tfn((turbot, $, callback) => {
       // your code here
     });
