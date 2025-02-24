@@ -2,6 +2,9 @@
 
 # Release History
 
+## 5.0.2 [2024-02-24]
+
+- Updated: Replaced @vhadianto/sns-validator with @turbot/sns-validator (published in npm).
 
 ## 5.0.1 [2024-12-11]
 
