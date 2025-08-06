@@ -1,9 +1,7 @@
 const _ = require("lodash");
 const { Turbot } = require("@turbot/sdk");
-const archiver = require("archiver");
 const asyncjs = require("async");
 const errors = require("@turbot/errors");
-const extract = require("extract-zip");
 const fs = require("fs-extra");
 const https = require("https");
 const log = require("@turbot/log");
@@ -18,8 +16,6 @@ const url = require("url");
 const util = require("util");
 const MessageValidator = require("@turbot/sns-validator");
 const validator = new MessageValidator();
-const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
-const { KMSClient, DecryptCommand } = require("@aws-sdk/client-kms");
 
 const cachedCredentials = new Map();
 
@@ -269,6 +265,8 @@ const expandEventData = (msgObj, callback) => {
       extract: [
         "downloadLargeParameterZip",
         (results, cb) => {
+          const extract = require("extract-zip");
+
           extract(results.downloadLargeParameterZip, { dir: results.tmpDir })
             .then(() => {
               return cb(null, results.downloadLargeParameterZip);
@@ -333,6 +331,9 @@ const messageSender = async (message, opts, callback) => {
         };
 
   console.log("Publishing to SNS with paramToUse new", { paramToUse });
+
+  const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
+
   const sns = taws.connect(SNSClient, paramToUse);
   // Create SNS client with AWS SDK v3
   // const snsClient = new SNSClient(paramToUse);
@@ -402,6 +403,8 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
             initialSize: 1000 * 1024, // start at 1000 kilobytes.
             incrementAmount: 1000 * 1024, // grow by 1000 kilobytes each time buffer overflows.
           });
+
+          const archiver = require("archiver");
 
           const archive = archiver("zip", {
             zlib: { level: 9 }, // Sets the compression level.
@@ -697,6 +700,8 @@ const decryptContainerParameters = ({ envelope }, callback) => {
             CiphertextBlob: Buffer.from(envelope.$$dataKey, "base64"),
             EncryptionContext: { purpose: "turbot-control" },
           };
+
+          const { KMSClient, DecryptCommand } = require("@aws-sdk/client-kms");
 
           // Create a KMS client using AWS SDK v3
           const kms = taws.connect(KMSClient, params);
