@@ -30,7 +30,7 @@
     "lodash": "^4.17.21",
     "rimraf": "3.0.2",
     "stream-buffers": "3.0.2",
-    "tmp": "0.2.1",
+    "tmp": "0.2.5",
     "url": "0.11.1"
   },
   "devDependencies": {
