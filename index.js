@@ -330,8 +330,6 @@ const messageSender = async (message, opts, callback) => {
     TopicArn: snsArn,
   };
 
-  console.log("Publishing to SNS with params new", { params });
-
   const paramToUse =
     _mode === "container"
       ? _containerSnsParam
@@ -346,7 +344,6 @@ const messageSender = async (message, opts, callback) => {
           retryStrategy: new taws.CustomDiscoveryRetryStrategy(4), // Assuming this is a custom function
         };
 
-  console.log("Publishing to SNS with paramToUse new", { paramToUse });
   const sns = taws.connect(SNSClient, paramToUse);
   // Create SNS client with AWS SDK v3
   // const snsClient = new SNSClient(paramToUse);
@@ -358,7 +355,6 @@ const messageSender = async (message, opts, callback) => {
     actionId: _.get(message, "meta.actionId"),
     controlId: _.get(message, "meta.controlId"),
     policyId: _.get(message, "meta.policyValueId", _.get(message, "meta.policyId")),
-    paramToUse,
   });
 
   try {
