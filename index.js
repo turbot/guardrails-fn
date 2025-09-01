@@ -1,15 +1,13 @@
 const _ = require("lodash");
 const { Turbot } = require("@turbot/sdk");
-const archiver = require("archiver");
 const asyncjs = require("async");
 const errors = require("@turbot/errors");
-const extract = require("extract-zip");
 const fs = require("fs-extra");
 const https = require("https");
 const log = require("@turbot/log");
 const os = require("os");
 const path = require("path");
-const request = require("request");
+const got = require("got");
 const rimraf = require("rimraf");
 const streamBuffers = require("stream-buffers");
 const taws = require("@turbot/guardrails-aws-sdk-v3");
@@ -250,25 +248,41 @@ const expandEventData = (msgObj, callback) => {
 
           // TODO: should we remove? how to re-run the control installed?
           const file = fs.createWriteStream(largeParamFileName);
+          const downloadStream = got.stream(largeParameterZipUrl);
 
-          return request
-            .get(largeParameterZipUrl)
-            .pipe(file)
-            .on("error", function (err) {
-              console.error("Error downloading large parameter", {
-                url: largeParameterZipUrl,
-                error: err,
-              });
-              return cb(err, largeParamFileName);
-            })
-            .on("close", () => {
-              return cb(null, largeParamFileName);
+          // Handle download stream errors
+          downloadStream.on("error", (err) => {
+            console.error("Error downloading large parameter", {
+              url: largeParameterZipUrl,
+              error: err,
             });
+            return cb(err, largeParamFileName);
+          });
+
+          // Handle file writing errors
+          file.on("error", (err) => {
+            console.error("Error writing large parameter file", {
+              file: largeParamFileName,
+              error: err,
+            });
+            return cb(err, largeParamFileName);
+          });
+
+          // Success case
+          file.on("finish", () => {
+            console.log("Large parameter file downloaded successfully", { largeParamFileName });
+            return cb(null, largeParamFileName);
+          });
+
+          downloadStream.pipe(file);
         },
       ],
       extract: [
         "downloadLargeParameterZip",
         (results, cb) => {
+          // Load extract package when it is required
+          const extract = require("extract-zip");
+
           extract(results.downloadLargeParameterZip, { dir: results.tmpDir })
             .then(() => {
               return cb(null, results.downloadLargeParameterZip);
@@ -316,8 +330,6 @@ const messageSender = async (message, opts, callback) => {
     TopicArn: snsArn,
   };
 
-  console.log("Publishing to SNS with params new", { params });
-
   const paramToUse =
     _mode === "container"
       ? _containerSnsParam
@@ -332,7 +344,6 @@ const messageSender = async (message, opts, callback) => {
           retryStrategy: new taws.CustomDiscoveryRetryStrategy(4), // Assuming this is a custom function
         };
 
-  console.log("Publishing to SNS with paramToUse new", { paramToUse });
   const sns = taws.connect(SNSClient, paramToUse);
   // Create SNS client with AWS SDK v3
   // const snsClient = new SNSClient(paramToUse);
@@ -344,7 +355,6 @@ const messageSender = async (message, opts, callback) => {
     actionId: _.get(message, "meta.actionId"),
     controlId: _.get(message, "meta.controlId"),
     policyId: _.get(message, "meta.policyValueId", _.get(message, "meta.policyId")),
-    paramToUse,
   });
 
   try {
@@ -403,6 +413,7 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
             incrementAmount: 1000 * 1024, // grow by 1000 kilobytes each time buffer overflows.
           });
 
+          const archiver = require("archiver");
           const archive = archiver("zip", {
             zlib: { level: 9 }, // Sets the compression level.
           });
@@ -760,17 +771,23 @@ class Run {
       {
         rawLaunchParameters: [
           (cb) => {
-            const requestOptions = {
-              timeout: 10000,
-              gzip: true,
-            };
-
-            request(Object.assign({ url: self._runnableParameters }, requestOptions), (err, response, body) => {
-              if (err) {
+            // We are using got to retrieve the container run parameters
+            // because the request package is deprecated and no longer maintained.
+            // Handles JSON parsing automatically with responseType "json"
+            // and enables gzip decompression with decompress: true
+            got(self._runnableParameters, {
+              timeout: {
+                request: 10000,
+              },
+              decompress: true,
+              responseType: "json",
+            })
+              .then((response) => {
+                cb(null, response.body);
+              })
+              .catch((err) => {
                 return cb(errors.internal("Unexpected error retrieving container run parameters", { error: err }));
-              }
-              cb(null, JSON.parse(body));
-            });
+              });
           },
         ],
         launchParameters: [
@@ -790,14 +807,12 @@ class Run {
             if (results.launchParameters.meta.launchType !== "EC2") {
               return cb();
             }
-            const request = require("request");
-            request(
-              `http://169.254.170.2${process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}`,
-              function (err, response, body) {
-                if (err) {
-                  return cb(err);
-                }
-                const containerMetadata = JSON.parse(body);
+
+            got(`http://169.254.170.2${process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}`, {
+              responseType: "json",
+            })
+              .then((response) => {
+                const containerMetadata = response.body;
                 _containerSnsParam = {
                   credentials: {
                     accessKeyId: containerMetadata.AccessKeyId,
@@ -809,8 +824,10 @@ class Run {
                   retryStrategy: new taws.CustomDiscoveryRetryStrategy(4), // Assuming this is a custom function
                 };
                 return cb(null, containerMetadata);
-              }
-            );
+              })
+              .catch((err) => {
+                return cb(err);
+              });
           },
         ],
         turbot: [
