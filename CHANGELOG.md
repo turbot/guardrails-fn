@@ -2,7 +2,15 @@
 
 # Release History
 
-## 5.0.3 [2024-04-09]
+## 5.0.5 [2025-09-25]
+
+- Updated: npm-request with npm-got@11.8.6. Closes #10 (#11)
+
+## 5.0.4 [2025-04-14]
+
+- Updated: @turbot/sns-validator to 5.0.2.
+
+## 5.0.3 [2025-04-09]
 
 - Updated: @turbot/sns-validator to 5.0.1.
 
