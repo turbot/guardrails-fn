@@ -2,6 +2,10 @@
 
 # Release History
 
+## 5.1.0 [2025-12-18]
+
+- Updated: npm-request with npm-got@11.8.6. Closes #10 (#11)
+
 ## 5.0.5 [2025-09-25]
 
 - Updated: npm-request with npm-got@11.8.6. Closes #10 (#11)
