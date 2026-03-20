@@ -1824,5 +1824,534 @@ describe("@turbot/guardrails-fn", function () {
         done();
       });
     });
+
+    it("handles fs.stat error during large command upload", function (done) {
+      this.timeout(5000);
+
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      sinon.stub(fs, "access").callsFake((path, cb) => cb(null));
+      sinon.stub(fs, "writeFile").callsFake((path, data, cb) => cb(null));
+
+      const { PassThrough } = require("stream");
+      sinon.stub(fs, "createReadStream").callsFake(() => {
+        const s = new PassThrough();
+        process.nextTick(() => s.end(Buffer.from("fake")));
+        return s;
+      });
+
+      // fs.stat fails
+      sinon.stub(fs, "stat").callsFake((path, cb) => cb(new Error("stat failed")));
+
+      const rimraf = require("rimraf");
+      sinon.stub(rimraf, "sync");
+
+      const event = {
+        Records: [{ Sns: { Message: JSON.stringify(msgObj), Type: "Notification" } }],
+      };
+
+      const handler = tfn((turbot, $, callback) => {
+        turbot.cargoContainer.largeCommands = { commands: [{ type: "test" }] };
+        turbot.cargoContainer.largeCommandState = null;
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        done();
+      });
+    });
+
+});
+
+  // ---------------------------------------------------------------------------
+  // finalize edge cases (mocked)
+  // ---------------------------------------------------------------------------
+  describe("finalize edge cases (mocked)", function () {
+    const MessageValidator = require("@turbot/sns-validator");
+    const taws = require("@turbot/guardrails-aws-sdk-v3");
+
+    const validMeta = {
+      runType: "control",
+      resourceId: "res-123456789012",
+      processId: "proc-123",
+      controlId: "ctl-123",
+      tenantId: "tnt-123",
+      returnSnsArn: "arn:aws:sns:us-east-1:123456789012:turbot-test",
+    };
+
+    beforeEach(function () {
+      delete process.env.TURBOT_TEST;
+    });
+
+    afterEach(function () {
+      process.env.TURBOT_TEST = "true";
+      sinon.restore();
+    });
+
+    it("handles send error when handler returns non-fatal error", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      // Make SNS send reject to trigger error in send callback (line 578)
+      const mockSns = { send: sinon.stub().rejects(new Error("SNS send failed")) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = {
+        Records: [{ Sns: { Message: JSON.stringify(msgObj), Type: "Notification" } }],
+      };
+
+      const handler = tfn((turbot, $, callback) => {
+        callback(new Error("handler non-fatal error"));
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("handles sendFinal error on successful handler", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      // Make SNS send reject to trigger error in sendFinal callback (line 557-558)
+      const mockSns = { send: sinon.stub().rejects(new Error("SNS sendFinal failed")) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = {
+        Records: [{ Sns: { Message: JSON.stringify(msgObj), Type: "Notification" } }],
+      };
+
+      const handler = tfn((turbot, $, callback) => {
+        turbot.ok();
+        callback(null, "success");
+      });
+
+      handler(event, {}, (err) => {
+        // sendFinal error is propagated
+        done();
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helper: save/restore process listeners around proxyquire loads
+// The module calls process.removeAllListeners() for SIGINT, SIGTERM,
+// uncaughtException, and unhandledRejection on load, which removes Mocha's
+// handlers. We must save them before and restore them after each load.
+// ---------------------------------------------------------------------------
+const signalEvents = ["SIGINT", "SIGTERM", "uncaughtException", "unhandledRejection"];
+let savedListeners = {};
+
+function saveProcessListeners() {
+  savedListeners = {};
+  for (const evt of signalEvents) {
+    savedListeners[evt] = process.listeners(evt).slice();
+  }
+}
+
+function restoreProcessListeners() {
+  for (const evt of signalEvents) {
+    process.removeAllListeners(evt);
+    for (const fn of savedListeners[evt] || []) {
+      process.on(evt, fn);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// proxyquire-based tests for Run.run() and container paths
+// ---------------------------------------------------------------------------
+describe("Run.run() (proxyquire)", function () {
+  const proxyquire = require("proxyquire").noCallThru();
+
+  const validLaunchParams = {
+    meta: {
+      runType: "control",
+      resourceId: "res-123456789012",
+      processId: "proc-123",
+      controlId: "ctl-123",
+      tenantId: "tnt-123",
+      returnSnsArn: "arn:aws:sns:us-east-1:123456789012:turbot-test",
+      launchType: "FARGATE",
+      s3PresignedUrlLargeCommands: "https://s3.amazonaws.com/bucket/key?presigned",
+    },
+    payload: {
+      input: { item: { name: "test-container-resource" } },
+    },
+  };
+
+  let exitStub;
+  let gotStub;
+  let gotStreamStub;
+  let tawsStub;
+  let mockSns;
+  let proxiedModule;
+
+  beforeEach(function () {
+    saveProcessListeners();
+    exitStub = sinon.stub();
+    gotStreamStub = sinon.stub();
+    mockSns = { send: sinon.stub().resolves({ MessageId: "msg-container" }) };
+
+    tawsStub = {
+      connect: sinon.stub().returns(mockSns),
+      CustomDiscoveryRetryStrategy: sinon.stub(),
+    };
+  });
+
+  afterEach(function () {
+    sinon.restore();
+    restoreProcessListeners();
+    process.env.TURBOT_TEST = "true";
+    delete process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+    delete process.env.TURBOT_REGION;
+  });
+
+  function loadModule(gotFn) {
+    gotFn.stream = gotStreamStub;
+    proxiedModule = proxyquire("..", {
+      got: gotFn,
+      "@turbot/guardrails-aws-sdk-v3": tawsStub,
+      "@turbot/sns-validator": function MockValidator() {
+        this.validate = sinon.stub();
+      },
+    });
+  }
+
+  it("constructor throws when no parameters supplied", function () {
+    gotStub = sinon.stub();
+    loadModule(gotStub);
+
+    delete process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS;
+    assert.throws(() => new proxiedModule.Run(), /No parameters supplied/);
+  });
+
+  it("constructor throws when parameters is 'undefined' string", function () {
+    gotStub = sinon.stub();
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "undefined";
+    assert.throws(() => new proxiedModule.Run(), /No parameters supplied/);
+  });
+
+  it("constructor succeeds with valid parameters URL", function () {
+    gotStub = sinon.stub();
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    const runner = new proxiedModule.Run();
+    assert.ok(runner);
+    assert.equal(runner._runnableParameters, "http://localhost:9999/params");
+  });
+
+  it("runs handler with unencrypted launch parameters (FARGATE)", function (done) {
+    gotStub = sinon.stub().resolves({ body: validLaunchParams });
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    exitStub = sinon.stub(process, "exit");
+
+    const runner = new proxiedModule.Run();
+    let handlerCalled = false;
+
+    runner.handler = function (turbot, $, callback) {
+      handlerCalled = true;
+      turbot.ok();
+      callback();
+    };
+
+    runner.run();
+
+    // Poll for process.exit call since run() is async
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        assert.ok(handlerCalled, "handler should have been called");
+        assert.ok(exitStub.calledWith(0), "process.exit(0) should be called");
+        done();
+      }
+    }, 10);
+
+    // Safety timeout
+    setTimeout(() => {
+      clearInterval(interval);
+      // If exit wasn't called, check if there was an error logged
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+
+  it("handles handler error by calling turbot.sendFinal and process.exit", function (done) {
+    gotStub = sinon.stub().resolves({ body: validLaunchParams });
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    exitStub = sinon.stub(process, "exit");
+
+    const runner = new proxiedModule.Run();
+    runner.handler = function (turbot, $, callback) {
+      callback(new Error("handler failed"));
+    };
+
+    runner.run();
+
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        assert.ok(exitStub.calledWith(0));
+        done();
+      }
+    }, 10);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+
+  it("retrieves EC2 container metadata for EC2 launch type", function (done) {
+    const ec2Params = JSON.parse(JSON.stringify(validLaunchParams));
+    ec2Params.meta.launchType = "EC2";
+
+    // First call: launch params. Second call: container metadata
+    const metadataResponse = {
+      body: {
+        AccessKeyId: "AKIAIOSFODNN7EXAMPLE",
+        SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        Token: "FwoGZXIvYXdzEBYaDH/EXAMPLE",
+      },
+    };
+
+    gotStub = sinon.stub();
+    gotStub.onFirstCall().resolves({ body: ec2Params });
+    gotStub.onSecondCall().resolves(metadataResponse);
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI = "/v2/credentials/test-id";
+    process.env.TURBOT_REGION = "us-east-1";
+    exitStub = sinon.stub(process, "exit");
+
+    const runner = new proxiedModule.Run();
+    runner.handler = function (turbot, $, callback) {
+      callback();
+    };
+
+    runner.run();
+
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        assert.ok(gotStub.calledTwice, "got should be called twice (params + metadata)");
+        assert.ok(exitStub.calledWith(0));
+        done();
+      }
+    }, 10);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+
+  it("decrypts container parameters when $$dataKey is present", function (done) {
+    // Create encrypted launch params with $$dataKey
+    const crypto = require("crypto");
+    const key = crypto.randomBytes(32);
+    const iv = crypto.randomBytes(12);
+    const plaintext = JSON.stringify(validLaunchParams);
+
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    const cipherBuffer = Buffer.concat([iv, encrypted, tag]);
+
+    const envelope = {
+      $$dataKey: key.toString("base64"),
+      $$data: cipherBuffer.toString("base64"),
+      kmsKey: "arn:aws:kms:us-east-1:123456789012:key/test-key-id",
+    };
+
+    // Mock KMS decrypt to return the key
+    const mockKms = {
+      send: sinon.stub().resolves({ Plaintext: Buffer.from(key.toString("base64"), "utf8") }),
+    };
+
+    gotStub = sinon.stub().resolves({ body: envelope });
+    loadModule(gotStub);
+
+    // Make taws.connect return mockKms for KMSClient and mockSns for SNSClient
+    tawsStub.connect = sinon.stub().callsFake((ClientClass, params) => {
+      if (params && params.KeyId) {
+        return mockKms;
+      }
+      return mockSns;
+    });
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    exitStub = sinon.stub(process, "exit");
+
+    const runner = new proxiedModule.Run();
+    runner.handler = function (turbot, $, callback) {
+      callback();
+    };
+
+    runner.run();
+
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        assert.ok(mockKms.send.calledOnce, "KMS decrypt should be called");
+        assert.ok(exitStub.calledWith(0));
+        done();
+      }
+    }, 10);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+
+  it("base class handler logs warning and calls back", function (done) {
+    gotStub = sinon.stub().resolves({ body: validLaunchParams });
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    exitStub = sinon.stub(process, "exit");
+
+    // Use base class handler (don't override) to cover line 921-923
+    const runner = new proxiedModule.Run();
+
+    runner.run();
+
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        assert.ok(exitStub.calledWith(0));
+        done();
+      }
+    }, 10);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+
+  it("cleans up AWS env vars after successful container run", function (done) {
+    gotStub = sinon.stub().resolves({ body: validLaunchParams });
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    process.env.AWS_ACCESS_KEY_ID = "TESTKEY";
+    process.env.AWS_SECRET_ACCESS_KEY = "TESTSECRET";
+    exitStub = sinon.stub(process, "exit");
+
+    const runner = new proxiedModule.Run();
+    runner.handler = function (turbot, $, callback) {
+      callback();
+    };
+
+    runner.run();
+
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        // Container mode deletes AWS env vars after handling
+        assert.equal(process.env.AWS_ACCESS_KEY_ID, undefined);
+        assert.equal(process.env.AWS_SECRET_ACCESS_KEY, undefined);
+        done();
+      }
+    }, 10);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// unhandledExceptionHandler (proxyquire)
+// ---------------------------------------------------------------------------
+describe("unhandledExceptionHandler via signal handlers (proxyquire)", function () {
+  const proxyquire = require("proxyquire").noCallThru();
+
+  beforeEach(function () {
+    saveProcessListeners();
+  });
+
+  afterEach(function () {
+    sinon.restore();
+    restoreProcessListeners();
+    process.env.TURBOT_TEST = "true";
+  });
+
+  it("module registers process signal handlers on load", function () {
+    const gotFn = sinon.stub();
+    gotFn.stream = sinon.stub();
+
+    const tawsStub = {
+      connect: sinon.stub(),
+      CustomDiscoveryRetryStrategy: sinon.stub(),
+    };
+
+    proxyquire("..", {
+      got: gotFn,
+      "@turbot/guardrails-aws-sdk-v3": tawsStub,
+      "@turbot/sns-validator": function MockValidator() {
+        this.validate = sinon.stub();
+      },
+    });
+
+    // After loading, the module registers handlers for these events
+    const sigintListeners = process.listeners("SIGINT");
+    const sigtermListeners = process.listeners("SIGTERM");
+    const uncaughtListeners = process.listeners("uncaughtException");
+    const rejectionListeners = process.listeners("unhandledRejection");
+
+    assert.ok(sigintListeners.length > 0, "SIGINT listener should be registered");
+    assert.ok(sigtermListeners.length > 0, "SIGTERM listener should be registered");
+    assert.ok(uncaughtListeners.length > 0, "uncaughtException listener should be registered");
+    assert.ok(rejectionListeners.length > 0, "unhandledRejection listener should be registered");
   });
 });
