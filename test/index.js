@@ -1,4 +1,5 @@
 const { assert } = require("chai");
+const sinon = require("sinon");
 const tfn = require("..");
 
 // AWS env vars that setAWSEnvVars manages
@@ -1085,6 +1086,741 @@ describe("@turbot/guardrails-fn", function () {
       handler(event, {}, () => {
         assert.equal(process.env.AWS_ACCESS_KEY_ID, "ORIG_KEY");
         assert.equal(process.env.AWS_REGION, "orig-region");
+        done();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Non-test mode with mocked external services
+  // ---------------------------------------------------------------------------
+  describe("non-test mode (mocked)", function () {
+    const MessageValidator = require("@turbot/sns-validator");
+    const taws = require("@turbot/guardrails-aws-sdk-v3");
+
+    const validMeta = {
+      runType: "control",
+      resourceId: "res-123456789012",
+      processId: "proc-123",
+      controlId: "ctl-123",
+      tenantId: "tnt-123",
+      returnSnsArn: "arn:aws:sns:us-east-1:123456789012:turbot-test",
+    };
+
+    function makeValidSnsEvent(msgObj) {
+      return {
+        Records: [
+          {
+            Sns: {
+              Message: JSON.stringify(msgObj),
+              Type: "Notification",
+              SignatureVersion: "1",
+              Signature: "test",
+              SigningCertUrl: "https://sns.us-east-1.amazonaws.com/cert.pem",
+            },
+          },
+        ],
+      };
+    }
+
+    beforeEach(function () {
+      delete process.env.TURBOT_TEST;
+    });
+
+    afterEach(function () {
+      process.env.TURBOT_TEST = "true";
+      sinon.restore();
+    });
+
+    it("processes valid SNS message through full lifecycle", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: { item: { name: "test-resource" } } },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        assert.exists(turbot);
+        assert.deepEqual($, msgObj.payload.input);
+        turbot.ok();
+        callback(null, "result");
+      });
+
+      handler(event, {}, (err) => {
+        done();
+      });
+    });
+
+    it("returns error when SNS message contains invalid JSON", function (done) {
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: "not valid json {{{" });
+      });
+
+      const event = {
+        Records: [
+          {
+            Sns: {
+              Message: "not valid json {{{",
+              Type: "Notification",
+            },
+          },
+        ],
+      };
+
+      const handler = tfn((turbot, $, callback) => {
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("defaults runType to control when not specified in meta", function (done) {
+      const msgObj = {
+        meta: {
+          resourceId: "res-123",
+          processId: "proc-123",
+          returnSnsArn: "arn:aws:sns:us-east-1:123456789012:test",
+        },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        assert.exists(turbot);
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        done();
+      });
+    });
+
+    it("handles handler error by sending error state via SNS", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        callback(new Error("handler failed"));
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("handles fatal error by swallowing err and sending success via SNS", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        const fatalErr = new Error("fatal crash");
+        fatalErr.fatal = true;
+        callback(fatalErr);
+      });
+
+      handler(event, {}, (err) => {
+        // Fatal errors are swallowed, sendFinal is called (success path)
+        done();
+      });
+    });
+
+    it("sets AWS credentials from SNS payload in non-test mode", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: {
+          input: {
+            account: {
+              credentials: {
+                AccessKeyId: "SNS-AKID",
+                SecretAccessKey: "SNS-SECRET",
+                SessionToken: "SNS-TOKEN",
+              },
+            },
+            item: { turbot: { custom: { aws: { regionName: "us-west-2" } } } },
+          },
+        },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        assert.equal(process.env.AWS_ACCESS_KEY_ID, "SNS-AKID");
+        assert.equal(process.env.AWS_SECRET_ACCESS_KEY, "SNS-SECRET");
+        assert.equal(process.env.AWS_SESSION_TOKEN, "SNS-TOKEN");
+        assert.equal(process.env.AWS_REGION, "us-west-2");
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        done();
+      });
+    });
+
+    it("messageSender calls taws.connect with SNS client", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSend = sinon.stub().resolves({ MessageId: "msg-456" });
+      const mockSns = { send: mockSend };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        turbot.ok();
+        callback(null, "done");
+      });
+
+      handler(event, {}, (err) => {
+        assert.isTrue(taws.connect.called);
+        done();
+      });
+    });
+
+    it("handles SNS publish error in messageSender gracefully", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().rejects(new Error("SNS publish failed")) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        turbot.ok();
+        callback(null, "done");
+      });
+
+      handler(event, {}, (err) => {
+        // SNS error is propagated back through sendFinal callback
+        done();
+      });
+    });
+
+    it("catches synchronous exception in handler in non-test mode", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn(() => {
+        throw new Error("sync crash in non-test");
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("uses TURBOT_FUNCTION_TYPE env var when no meta.runType", function (done) {
+      process.env.TURBOT_FUNCTION_TYPE = "policy";
+      const msgObj = {
+        meta: {
+          resourceId: "res-123",
+          processId: "proc-123",
+          returnSnsArn: "arn:aws:sns:us-east-1:123456789012:test",
+        },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        done();
+      });
+    });
+
+    it("returns expandEventData error back to caller", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: {
+          type: "large_parameter",
+          s3PresignedUrlForParameterGet: "https://s3.example.com/large-param.zip",
+          input: {},
+        },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      // Stub tmp.dir to fail, triggering error path in expandEventData
+      const tmp = require("tmp");
+      sinon.stub(tmp, "dir").callsFake((opts, cb) => {
+        cb(new Error("tmp dir creation failed"));
+      });
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("expands large_parameter payload successfully", function (done) {
+      const expandedPayload = {
+        payload: { input: { item: { name: "expanded-resource" } } },
+      };
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: {
+          type: "large_parameter",
+          s3PresignedUrlForParameterGet: "https://s3.example.com/large-param.zip",
+          input: {},
+        },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      // Stub tmp.dir
+      const tmp = require("tmp");
+      sinon.stub(tmp, "dir").callsFake((opts, cb) => cb(null, "/tmp/mock-expand"));
+
+      // Stub got.stream to return a mock readable
+      const got = require("got");
+      const { EventEmitter } = require("events");
+      const mockDownloadStream = new EventEmitter();
+      mockDownloadStream.pipe = function (writable) {
+        process.nextTick(() => writable.emit("finish"));
+        return writable;
+      };
+      sinon.stub(got, "stream").returns(mockDownloadStream);
+
+      // Stub fs.createWriteStream to return a mock writable
+      const fs = require("fs-extra");
+      const mockWritable = new EventEmitter();
+      sinon.stub(fs, "createWriteStream").returns(mockWritable);
+
+      // Pre-require extract-zip to ensure it's in the cache, then stub it
+      require("extract-zip");
+      const extractZipPath = require.resolve("extract-zip");
+      const originalExtractZip = require.cache[extractZipPath].exports;
+      require.cache[extractZipPath].exports = sinon.stub().resolves();
+
+      // Stub fs.readJson to return expanded data
+      sinon.stub(fs, "readJson").callsFake((filePath, cb) => {
+        cb(null, expandedPayload);
+      });
+
+      // Stub rimraf.sync
+      const rimraf = require("rimraf");
+      sinon.stub(rimraf, "sync");
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        // The expanded data should be merged into $
+        assert.equal($.item.name, "expanded-resource");
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        require.cache[extractZipPath].exports = originalExtractZip;
+        assert.isTrue(got.stream.calledOnce);
+        done();
+      });
+    });
+
+    it("handles download error in expandEventData", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: {
+          type: "large_parameter",
+          s3PresignedUrlForParameterGet: "https://s3.example.com/large-param.zip",
+          input: {},
+        },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      // Stub tmp.dir
+      const tmp = require("tmp");
+      sinon.stub(tmp, "dir").callsFake((opts, cb) => cb(null, "/tmp/mock-dl-err"));
+
+      // Stub got.stream — emit error after pipe
+      const got = require("got");
+      const { EventEmitter } = require("events");
+      const mockDownloadStream = new EventEmitter();
+      mockDownloadStream.pipe = function (writable) {
+        process.nextTick(() => mockDownloadStream.emit("error", new Error("download failed")));
+        return writable;
+      };
+      sinon.stub(got, "stream").returns(mockDownloadStream);
+
+      // Stub fs.createWriteStream
+      const fs = require("fs-extra");
+      const mockWritable = new EventEmitter();
+      sinon.stub(fs, "createWriteStream").returns(mockWritable);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("handles extract-zip error in expandEventData", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: {
+          type: "large_parameter",
+          s3PresignedUrlForParameterGet: "https://s3.example.com/large-param.zip",
+          input: {},
+        },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const tmp = require("tmp");
+      sinon.stub(tmp, "dir").callsFake((opts, cb) => cb(null, "/tmp/mock-extract-err"));
+
+      const got = require("got");
+      const { EventEmitter } = require("events");
+      const mockDownloadStream = new EventEmitter();
+      mockDownloadStream.pipe = function (writable) {
+        process.nextTick(() => writable.emit("finish"));
+        return writable;
+      };
+      sinon.stub(got, "stream").returns(mockDownloadStream);
+
+      const fs = require("fs-extra");
+      const mockWritable = new EventEmitter();
+      sinon.stub(fs, "createWriteStream").returns(mockWritable);
+
+      // Pre-require then stub extract-zip to reject
+      require("extract-zip");
+      const extractZipPath = require.resolve("extract-zip");
+      const originalExtractZip = require.cache[extractZipPath].exports;
+      require.cache[extractZipPath].exports = sinon.stub().rejects(new Error("bad zip"));
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        require.cache[extractZipPath].exports = originalExtractZip;
+        assert.exists(err);
+        done();
+      });
+    });
+
+    it("handles file write error in expandEventData", function (done) {
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: {
+          type: "large_parameter",
+          s3PresignedUrlForParameterGet: "https://s3.example.com/large-param.zip",
+          input: {},
+        },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const tmp = require("tmp");
+      sinon.stub(tmp, "dir").callsFake((opts, cb) => cb(null, "/tmp/mock-write-err"));
+
+      const got = require("got");
+      const { EventEmitter } = require("events");
+      const mockDownloadStream = new EventEmitter();
+      mockDownloadStream.pipe = function (writable) {
+        process.nextTick(() => writable.emit("error", new Error("write failed")));
+        return writable;
+      };
+      sinon.stub(got, "stream").returns(mockDownloadStream);
+
+      const fs = require("fs-extra");
+      const mockWritable = new EventEmitter();
+      sinon.stub(fs, "createWriteStream").returns(mockWritable);
+
+      const event = makeValidSnsEvent(msgObj);
+      const handler = tfn((turbot, $, callback) => {
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        assert.exists(err);
+        done();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // persistLargeCommands (mocked)
+  // ---------------------------------------------------------------------------
+  describe("persistLargeCommands (mocked, via handler)", function () {
+    const MessageValidator = require("@turbot/sns-validator");
+    const taws = require("@turbot/guardrails-aws-sdk-v3");
+    const https = require("https");
+    const fs = require("fs-extra");
+
+    const validMeta = {
+      runType: "control",
+      resourceId: "res-123456789012",
+      processId: "proc-123",
+      controlId: "ctl-123",
+      tenantId: "tnt-123",
+      returnSnsArn: "arn:aws:sns:us-east-1:123456789012:turbot-test",
+      s3PresignedUrlLargeCommands: "https://s3.example.com/put-commands?sig=abc",
+    };
+
+    beforeEach(function () {
+      delete process.env.TURBOT_TEST;
+    });
+
+    afterEach(function () {
+      process.env.TURBOT_TEST = "true";
+      sinon.restore();
+    });
+
+    it("persists large commands via S3 presigned URL", function (done) {
+      this.timeout(5000);
+
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      // Mock fs.access to trigger ENOENT (dir does not exist)
+      sinon.stub(fs, "access").callsFake((path, cb) => {
+        const err = new Error("ENOENT");
+        err.code = "ENOENT";
+        cb(err);
+      });
+
+      // Mock fs.ensureDir
+      sinon.stub(fs, "ensureDir").callsFake((path, cb) => cb(null));
+
+      // Mock fs.writeFile
+      sinon.stub(fs, "writeFile").callsFake((path, data, cb) => cb(null));
+
+      // Mock fs.createReadStream — return a stream that ends with data
+      const { EventEmitter } = require("events");
+      const { PassThrough } = require("stream");
+      sinon.stub(fs, "createReadStream").callsFake(() => {
+        const s = new PassThrough();
+        process.nextTick(() => s.end(Buffer.from("fake-zip-data")));
+        return s;
+      });
+
+      // Mock fs.stat
+      sinon.stub(fs, "stat").callsFake((path, cb) => cb(null, { size: 1024 }));
+
+      // Mock https.request
+      sinon.stub(https, "request").callsFake((opts, respCb) => {
+        const mockReq = new PassThrough();
+        process.nextTick(() => {
+          const resp = new EventEmitter();
+          respCb(resp);
+          process.nextTick(() => {
+            resp.emit("data", "OK");
+            resp.emit("end");
+          });
+        });
+        return mockReq;
+      });
+
+      // Mock rimraf.sync
+      const rimraf = require("rimraf");
+      sinon.stub(rimraf, "sync");
+
+      const event = {
+        Records: [
+          {
+            Sns: {
+              Message: JSON.stringify(msgObj),
+              Type: "Notification",
+            },
+          },
+        ],
+      };
+
+      const handler = tfn((turbot, $, callback) => {
+        // Inject large commands into cargo to trigger persistLargeCommands
+        turbot.cargoContainer.largeCommands = {
+          commands: [{ type: "resource_put", data: { id: "res-test" } }],
+        };
+        turbot.cargoContainer.largeCommandState = null;
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        assert.isTrue(https.request.calledOnce);
+        assert.isTrue(rimraf.sync.called);
+        done();
+      });
+    });
+
+    it("persists large commands with largeCommandV2 flag", function (done) {
+      this.timeout(5000);
+
+      const msgObj = {
+        meta: { ...validMeta },
+        payload: { input: {} },
+      };
+
+      sinon.stub(MessageValidator.prototype, "validate").callsFake((msg, cb) => {
+        cb(null, { Message: JSON.stringify(msgObj) });
+      });
+
+      const mockSns = { send: sinon.stub().resolves({ MessageId: "msg-123" }) };
+      sinon.stub(taws, "connect").returns(mockSns);
+
+      // Mock fs for temp dir (existing dir)
+      sinon.stub(fs, "access").callsFake((path, cb) => cb(null));
+      sinon.stub(fs, "writeFile").callsFake((path, data, cb) => cb(null));
+
+      const { EventEmitter } = require("events");
+      const { PassThrough } = require("stream");
+      sinon.stub(fs, "createReadStream").callsFake(() => {
+        const s = new PassThrough();
+        process.nextTick(() => s.end(Buffer.from("fake-zip-data")));
+        return s;
+      });
+      sinon.stub(fs, "stat").callsFake((path, cb) => cb(null, { size: 512 }));
+
+      sinon.stub(https, "request").callsFake((opts, respCb) => {
+        const mockReq = new PassThrough();
+        process.nextTick(() => {
+          const resp = new EventEmitter();
+          respCb(resp);
+          process.nextTick(() => {
+            resp.emit("data", "OK");
+            resp.emit("end");
+          });
+        });
+        return mockReq;
+      });
+
+      const rimraf = require("rimraf");
+      sinon.stub(rimraf, "sync");
+
+      const event = {
+        Records: [
+          {
+            Sns: {
+              Message: JSON.stringify(msgObj),
+              Type: "Notification",
+            },
+          },
+        ],
+      };
+
+      const handler = tfn((turbot, $, callback) => {
+        // Use largeCommandV2 format
+        turbot.cargoContainer.largeCommandV2 = true;
+        turbot.cargoContainer.commands = [{ type: "resource_put" }];
+        turbot.cargoContainer.logEntries = [{ level: "info", message: "test" }];
+        turbot.cargoContainer.largeCommandState = null;
+        turbot.ok();
+        callback(null, true);
+      });
+
+      handler(event, {}, (err) => {
+        assert.isTrue(https.request.calledOnce);
         done();
       });
     });
