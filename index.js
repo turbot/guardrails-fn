@@ -519,13 +519,16 @@ const finalize = (event, context, init, err, result, callback) => {
   if (!init || !init.turbot) {
     // can't do anything here .. have to just silently return
     console.error("Error reported but no turbot object, unable to send anything back", { error: err });
+    return callback(err);
   }
 
   // DO NOT log error here - we've persisted the large commands, let's avoid adding
   // any new information into the cargo
 
-  // Do not wait for empty callback look to terminate the process
-  context.callbackWaitsForEmptyEventLoop = false;
+  // Do not wait for empty callback loop to terminate the process
+  if (context) {
+    context.callbackWaitsForEmptyEventLoop = false;
+  }
 
   // If in test mode, then do not publish to SNS. Instead, morph the response to include
   // both the turbot information and the raw result so they can be used for assertions.
