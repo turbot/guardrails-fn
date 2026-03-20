@@ -2108,6 +2108,32 @@ describe("Run.run() (proxyquire)", function () {
     }, 5000);
   });
 
+  it("handles got() error when retrieving launch parameters", function (done) {
+    gotStub = sinon.stub().rejects(new Error("Network error"));
+    loadModule(gotStub);
+
+    process.env.TURBOT_CONTROL_CONTAINER_PARAMETERS = "http://localhost:9999/params";
+    exitStub = sinon.stub(process, "exit");
+
+    const runner = new proxiedModule.Run();
+    runner.run();
+
+    const interval = setInterval(() => {
+      if (exitStub.called) {
+        clearInterval(interval);
+        assert.ok(exitStub.calledWith(0), "process.exit(0) should be called on error");
+        done();
+      }
+    }, 10);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      if (!exitStub.called) {
+        done(new Error("process.exit was not called within timeout"));
+      }
+    }, 5000);
+  });
+
   it("handles handler error by calling turbot.sendFinal and process.exit", function (done) {
     gotStub = sinon.stub().resolves({ body: validLaunchParams });
     loadModule(gotStub);
