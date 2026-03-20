@@ -77,7 +77,7 @@ const setAWSEnvVars = ($) => {
   let region = _.get(
     $,
     "item.turbot.custom.aws.regionName",
-    _.get($, "item.turbot.metadata.aws.regionName", _.get($, "item.metadata.aws.regionName"))
+    _.get($, "item.turbot.metadata.aws.regionName", _.get($, "item.metadata.aws.regionName")),
   );
 
   if (!region) {
@@ -159,7 +159,10 @@ const initialize = (event, context, callback) => {
   const rawMessage = _.get(event, "Records[0].Sns.Message");
   if (!rawMessage) {
     return callback(
-      errors.badRequest("Turbot controls should be called via SNS, or with TURBOT_TEST set to true", { event, context })
+      errors.badRequest("Turbot controls should be called via SNS, or with TURBOT_TEST set to true", {
+        event,
+        context,
+      }),
     );
   }
 
@@ -167,7 +170,7 @@ const initialize = (event, context, callback) => {
     if (err) {
       log.error("Error in validating SNS message", { error: err, message: event.Records[0].Sns });
       return callback(
-        errors.badRequest("Failed SNS message validation", { error: err, message: event.Records[0].Sns })
+        errors.badRequest("Failed SNS message validation", { error: err, message: event.Records[0].Sns }),
       );
     }
 
@@ -181,7 +184,7 @@ const initialize = (event, context, callback) => {
       return callback(
         errors.badRequest("Invalid input data while starting the lambda function. Message should be received via SNS", {
           error: e,
-        })
+        }),
       );
     }
 
@@ -314,7 +317,7 @@ const expandEventData = (msgObj, callback) => {
       _.defaultsDeep(msgObj.payload, results.parsedData.payload);
 
       return callback(null, msgObj);
-    }
+    },
   );
 };
 
@@ -491,7 +494,7 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
       log.info("Cargo state set to finalized no further data will be added.");
       cargoContainer.largeCommandState = "finalised";
       return callback(err, results);
-    }
+    },
   );
 };
 
@@ -612,7 +615,7 @@ function tfn(handlerCallback) {
                   {
                     error: err,
                     mode: _mode,
-                  }
+                  },
                 );
               }
 
@@ -628,7 +631,7 @@ function tfn(handlerCallback) {
                 {
                   error: err,
                   mode: _mode,
-                }
+                },
               );
             }
           }
@@ -643,7 +646,7 @@ function tfn(handlerCallback) {
             () => {
               // Handler is complete, so finalize the turbot handling.
               finalize(event, context, init, err, result, callback);
-            }
+            },
           );
         });
       } catch (err) {
@@ -749,7 +752,7 @@ const decryptContainerParameters = ({ envelope }, callback) => {
     },
     (err, results) => {
       return callback(err, results.decryptedData);
-    }
+    },
   );
 };
 
@@ -882,7 +885,7 @@ class Run {
 
         // this is a container so need to delete these.
         log.debug(
-          "Deleting env variables: AWS_ACCESS_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_KEY, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_SECURITY_TOKEN"
+          "Deleting env variables: AWS_ACCESS_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_KEY, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_SECURITY_TOKEN",
         );
 
         delete process.env.AWS_ACCESS_KEY;
@@ -908,9 +911,9 @@ class Run {
             results.turbot.sendFinal(() => {
               process.exit(0);
             });
-          }
+          },
         );
-      }
+      },
     );
   }
 
