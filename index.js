@@ -495,6 +495,41 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
   );
 };
 
+// AWS SDK v2 errors make a poor process log entry. When the response body has no message the SDK sets it to null, and
+// it replaces each other body field with a "[field]" placeholder while hiding the field itself. Keep the fields a
+// reader can act on, and give the error a message when it has none.
+const normalizeError = (err) => {
+  if (!_.isObject(err)) {
+    return err;
+  }
+
+  // The SDK hides the body fields because it can't tell which of them are sensitive, so drop the placeholders rather
+  // than recover the values.
+  const fields = _.omitBy(err, (value, key) => ["message", "name", "stack"].includes(key) || /^\[.+\]$/.test(key));
+
+  let message = err.message;
+  if (typeof message !== "string" || message === "") {
+    const details = _.compact([
+      err.statusCode && `HTTP ${err.statusCode}`,
+      err.requestId && `request ${err.requestId}`,
+    ]);
+    message = `${err.code || err.name || "Unknown error"}${details.length ? ` (${details.join(", ")})` : ""}`;
+  }
+
+  return _.omitBy({ message, name: err.name, ...fields }, _.isUndefined);
+};
+
+// Log an error to the process log. Its stack goes in a debug entry instead: for an SDK error it holds only SDK
+// frames, which don't say which service or operation failed.
+const logError = (turbot, message, err, data) => {
+  const error = normalizeError(err);
+  turbot.log.error(message, { error, ...data });
+  if (err && typeof err.stack === "string") {
+    turbot.log.debug("Stack trace of the error above", { stack: err.stack });
+  }
+  return error;
+};
+
 const finalize = (event, context, init, err, result, callback) => {
   if (!callback) {
     // If called from a container, callback does not exist
@@ -566,7 +601,7 @@ const finalize = (event, context, init, err, result, callback) => {
 
   // Don't do this for Lambda, see comment above
   if (_mode === "container") {
-    init.turbot.log.error("Error running container", { error: err });
+    logError(init.turbot, "Error running container", err);
     init.turbot.error("Error running container");
   }
 
@@ -606,29 +641,25 @@ function tfn(handlerCallback) {
         handlerCallback(init.turbot, init.turbot.$, (err, result) => {
           if (err) {
             if (err.fatal) {
-              if (_.get(init, "turbot")) {
-                init.turbot.log.error(
-                  `Unexpected fatal error while executing Lambda/Container function. Container error is always fatal. Execution will be terminated immediately.`,
-                  {
-                    error: err,
-                    mode: _mode,
-                  }
-                );
-              }
+              const error = logError(
+                init.turbot,
+                `Unexpected fatal error while executing Lambda/Container function. Container error is always fatal. Execution will be terminated immediately.`,
+                err,
+                { mode: _mode }
+              );
 
               // for a fatal error, set control state to error and return a null error
               // so SNS will think the lambda execution is successful and will not retry
-              result = init.turbot.error(err.message, { error: err });
+              result = init.turbot.error(error.message, { error });
 
               err = null;
             } else {
               // If we receive error we want to add it to the turbot object.
-              init.turbot.log.error(
+              logError(
+                init.turbot,
                 `Unexpected non-fatal error while executing Lambda function. Lambda will be retried based on AWS Lambda retry policy`,
-                {
-                  error: err,
-                  mode: _mode,
-                }
+                err,
+                { mode: _mode }
               );
             }
           }
@@ -867,7 +898,7 @@ class Run {
         if (err) {
           log.error("Error while running", { error: err, results: results });
           if (results.turbot) {
-            results.turbot.log.error("Error while running container", { error: err });
+            logError(results.turbot, "Error while running container", err);
             results.turbot.error("Error while running container");
             results.turbot.stop();
             return results.turbot.sendFinal(() => {
