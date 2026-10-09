@@ -1,0 +1,21 @@
+# .claude/inbox-gates.yml — turbot/guardrails-fn
+#
+# What a change must run and show before an agent's PR counts as done.
+# An agent reads this through `agent-fleet gates owed`: it matches the changed files to
+# the kinds below, and owes every check, proof and skill of every kind it matches.
+# A file no kind matches falls to a built-in "other" kind. Every key is described in
+# kits/inbox/GATES.md in the agent-fleet repo.
+
+ci_is_proof: false          # the repo has no PR checks; runs prove things locally
+
+never_run:                  # a run must never execute these
+  - npm publish*
+
+checks:                     # cost is a rough guess in minutes
+  lint: {run: "npx eslint index.js test", cost: 1, inputs: ["index.js", "test/**"]}
+  unit: {run: "npm test", cost: 1, inputs: ["index.js", "test/**"]}   # test/index.js needs @turbot/sdk-test
+
+kinds:
+  code: {paths: ["index.js", "test/**"], checks: [lint, unit], show: [test]}
+  deps: {paths: ["package.json", "package-lock.json"], checks: [unit], show: [output]}
+  docs: {paths: ["**/*.md", ".claude/**", ".vscode/**", "LICENSE", ".gitignore"], show: [none]}
