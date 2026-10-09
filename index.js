@@ -9,6 +9,7 @@ const os = require("os");
 const path = require("path");
 const got = require("got");
 const rimraf = require("rimraf");
+const { pipeline } = require("stream");
 const streamBuffers = require("stream-buffers");
 const taws = require("@turbot/guardrails-aws-sdk-v3");
 const tmp = require("tmp");
@@ -250,44 +251,20 @@ const expandEventData = (msgObj, callback) => {
           const file = fs.createWriteStream(largeParamFileName);
           const downloadStream = got.stream(largeParameterZipUrl);
 
-          // pipe() does not clean up when one side fails, so each error handler destroys the other stream, or its
-          // file descriptor or socket stays open until the process exits. Only the first outcome is passed on.
-          let settled = false;
-          const settle = (err) => {
-            if (settled) {
-              return;
+          // pipeline() destroys both streams when either fails, so neither the file descriptor nor the socket stays
+          // open until the process exits, and it calls back once.
+          pipeline(downloadStream, file, (err) => {
+            if (err) {
+              console.error("Error downloading large parameter", {
+                url: largeParameterZipUrl,
+                file: largeParamFileName,
+                error: err,
+              });
+              return cb(err);
             }
-            settled = true;
-            return cb(err, largeParamFileName);
-          };
-
-          // Handle download stream errors
-          downloadStream.on("error", (err) => {
-            console.error("Error downloading large parameter", {
-              url: largeParameterZipUrl,
-              error: err,
-            });
-            file.destroy();
-            return settle(err);
-          });
-
-          // Handle file writing errors
-          file.on("error", (err) => {
-            console.error("Error writing large parameter file", {
-              file: largeParamFileName,
-              error: err,
-            });
-            downloadStream.destroy();
-            return settle(err);
-          });
-
-          // Success case
-          file.on("finish", () => {
             console.log("Large parameter file downloaded successfully", { largeParamFileName });
-            return settle(null);
+            return cb(null, largeParamFileName);
           });
-
-          downloadStream.pipe(file);
         },
       ],
       extract: [
@@ -986,9 +963,6 @@ tfn.fnAsync = (asyncHandler) => {
 
 // Generic runner
 tfn.Run = Run;
-
-// Exposed for tests only; not part of the public API.
-tfn._expandEventData = expandEventData;
 
 // Allow the callback version to be the default require (mostly for backwards compatibility):
 //   tfn = require("@turbot/fn");
