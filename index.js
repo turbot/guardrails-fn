@@ -256,7 +256,7 @@ const expandEventData = (msgObj, callback) => {
               url: largeParameterZipUrl,
               error: err,
             });
-            return cb(err, largeParamFileName);
+            return cb(err);
           });
 
           // Handle file writing errors
@@ -265,7 +265,7 @@ const expandEventData = (msgObj, callback) => {
               file: largeParamFileName,
               error: err,
             });
-            return cb(err, largeParamFileName);
+            return cb(err);
           });
 
           // Success case
