@@ -432,7 +432,7 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
       putLargeCommands: [
         "largeCommandZip",
         (results, cb) => {
-          const stream = fs.createReadStream(results.largeCommandZip);
+          // Open the zip only once stat has succeeded, so a failed stat leaves no file descriptor open.
           fs.stat(results.largeCommandZip, (err, stat) => {
             if (err) {
               console.error("Error stat large command zip file", { error: err });
@@ -454,6 +454,19 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
 
             opts.log.debug("Options to put large commands", { options: reqOptions });
             log.info("Saving large command with options", { options: reqOptions });
+
+            const stream = fs.createReadStream(results.largeCommandZip);
+
+            // A failed request or read can report more than once (destroying one side errors the other), so call
+            // back once, and close the zip whichever way the upload ends.
+            let finished = false;
+            const finish = (err) => {
+              if (finished) return;
+              finished = true;
+              stream.destroy();
+              cb(err);
+            };
+
             const req = https
               .request(reqOptions, (resp) => {
                 let data = "";
@@ -466,13 +479,19 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
                 resp.on("end", () => {
                   opts.log.debug("End put large commands", { data: data });
                   log.info("Large command saving completed", { data: data });
-                  cb();
+                  finish();
                 });
               })
               .on("error", (err) => {
                 console.error("Error putting commands to S3", { error: err });
-                return cb(err);
+                finish(err);
               });
+
+            stream.on("error", (err) => {
+              console.error("Error reading large command zip file", { error: err });
+              req.destroy();
+              finish(err);
+            });
 
             stream.pipe(req);
           });
