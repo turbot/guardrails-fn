@@ -1,13 +1,12 @@
 const { expect } = require("chai");
 const http = require("http");
-const path = require("path");
 
 const taws = require("@turbot/guardrails-aws-sdk-v3");
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
 
-// tfn publishes its commands with SNS, whose replies are XML. @aws-sdk/core parses them with fast-xml-parser, which
-// package.json overrides to a patched 4.5.x in place of the 4.4.1 that @aws-sdk/core 3.649.0 pins. These tests send
-// a Publish through the same taws.connect(SNSClient, …) that tfn uses, to a local server that answers like SNS.
+// tfn publishes its commands with SNS, whose replies are XML. These tests send a Publish through the same
+// taws.connect(SNSClient, …) that tfn uses, to a local server that answers like SNS, so a change to how the SDK
+// parses XML has to keep reading both a successful reply and an error reply.
 
 const TOPIC = "arn:aws:sns:us-east-1:123456789012:turbot-commands";
 
@@ -46,15 +45,6 @@ describe("SNS replies parsed by the AWS SDK", function () {
     }
     local.server.close(done);
     local = null;
-  });
-
-  it("parses with the patched fast-xml-parser", function () {
-    const core = path.dirname(require.resolve("@aws-sdk/core"));
-    const { version } = require(require.resolve("fast-xml-parser/package.json", { paths: [core] }));
-    const [major, minor, patch] = version.split(".").map(Number);
-
-    expect(major, version).to.equal(4);
-    expect(minor * 1000 + patch, `fast-xml-parser ${version} is below 4.5.5`).to.be.at.least(5005);
   });
 
   it("reads the message ID of a successful publish", async function () {

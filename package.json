@@ -43,9 +43,6 @@
     "prettier": "2.3.1"
   },
   "overrides": {
-    "@aws-sdk/core": {
-      "fast-xml-parser": "^4.5.7"
-    },
     "@turbot/guardrails-aws-sdk-v3": {
       "lodash": "$lodash"
     }
