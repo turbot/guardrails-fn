@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const asyncjs = require("async");
 const fs = require("fs-extra");
+const got = require("got");
 const tmp = require("tmp");
 const archiver = require("archiver");
 const MessageValidator = require("@turbot/sns-validator");
@@ -29,6 +30,16 @@ const largeParameterEvent = (url) => {
   return { Records: [{ Sns: { Message: JSON.stringify(msgObj) } }] };
 };
 
+// Waits for an emitter's event, failing if it does not come within a second.
+const waitFor = (emitter, event, what) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} was not closed`)), 1000);
+    emitter.once(event, () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
 // Runs the assertions and ends the test with their outcome. A throw must not escape: index.js turns an uncaught
 // exception into a process exit.
 const settle = (done, assertions) => {
@@ -44,6 +55,9 @@ describe("expandEventData large parameter download", function () {
   let server, baseUrl, respond;
   let originalValidate, originalAuto, originalTmpDir;
   let downloadCallbackArgs, tmpDirs;
+  let downloadStream, file, onDownload;
+  const originalStream = got.stream;
+  const originalCreateWriteStream = fs.createWriteStream;
 
   before(function (done) {
     // Accept the hand-built SNS event without checking its signature.
@@ -87,6 +101,20 @@ describe("expandEventData large parameter download", function () {
   beforeEach(function () {
     downloadCallbackArgs = [];
     tmpDirs = [];
+
+    // Spy on the two streams expandEventData opens, so a test can see whether they were closed.
+    downloadStream = undefined;
+    file = undefined;
+    onDownload = () => {};
+    got.stream = (...args) => {
+      downloadStream = originalStream(...args);
+      onDownload();
+      return downloadStream;
+    };
+    fs.createWriteStream = (...args) => {
+      file = originalCreateWriteStream(...args);
+      return file;
+    };
     respond = (req, res) => {
       res.statusCode = 404;
       res.end();
@@ -94,6 +122,12 @@ describe("expandEventData large parameter download", function () {
   });
 
   afterEach(function () {
+    // Close a download a failed test left open, so it does not fail later into a callback already called.
+    if (downloadStream && !downloadStream.destroyed) {
+      downloadStream.destroy();
+    }
+    got.stream = originalStream;
+    fs.createWriteStream = originalCreateWriteStream;
     tmp.dir = originalTmpDir;
     for (const dir of tmpDirs) {
       fs.removeSync(dir);
@@ -158,5 +192,51 @@ describe("expandEventData large parameter download", function () {
         wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => done(err || new Error("ended")));
       })
       .catch(done);
+  });
+
+  it("closes the file write stream when the download fails", function (done) {
+    respond = (req, res) => {
+      // Promise more than is sent, then drop the connection mid-body.
+      res.writeHead(200, { "content-type": "application/zip", "content-length": 1000 });
+      res.write(Buffer.alloc(10));
+      setTimeout(() => req.socket.destroy(), 50);
+    };
+    const wrappedFn = tfn(() => done(new Error("handler should not run when the download fails")));
+    wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
+      try {
+        expect(err).to.be.an("error");
+        expect(downloadCallbackArgs).to.deep.equal([[err]]);
+        expect(downloadStream.destroyed).to.equal(true);
+        expect(file.destroyed).to.equal(true);
+      } catch (e) {
+        return done(e);
+      }
+      (file.closed ? Promise.resolve() : waitFor(file, "close", "the file write stream")).then(() => done(), done);
+    });
+  });
+
+  it("destroys the download stream when writing the file fails", function (done) {
+    let serverSocketClosed;
+    respond = (req, res) => {
+      serverSocketClosed = waitFor(req.socket, "close", "the download connection");
+      res.writeHead(200, { "content-type": "application/zip", "content-length": 1000 });
+      res.write(Buffer.alloc(10));
+    };
+    // Fail the write once the download is under way, the way a full disk does mid-download.
+    const diskFull = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    onDownload = () => downloadStream.once("response", () => file.destroy(diskFull));
+    const wrappedFn = tfn(() => done(new Error("handler should not run when the file write fails")));
+    wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
+      try {
+        expect(err.code).to.equal("ENOSPC");
+        expect(downloadCallbackArgs).to.deep.equal([[err]]);
+        expect(downloadStream.destroyed).to.equal(true);
+        // The server sees the client drop the connection, so the socket is not left open.
+        expect(serverSocketClosed).to.exist;
+      } catch (e) {
+        return done(e);
+      }
+      serverSocketClosed.then(() => done(), done);
+    });
   });
 });
