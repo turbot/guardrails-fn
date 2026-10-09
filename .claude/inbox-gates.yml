@@ -6,7 +6,7 @@
 # A file no kind matches falls to a built-in "other" kind. Every key is described in
 # kits/inbox/GATES.md in the agent-fleet repo.
 
-ci_is_proof: false          # the repo has no PR checks; runs prove things locally
+ci_is_proof: false          # CI runs only npm test (.github/workflows/test.yml); runs still prove things locally
 
 never_run:                  # a run must never execute these
   - npm publish*
