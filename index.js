@@ -495,9 +495,13 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
   );
 };
 
-// AWS SDK v2 errors make a poor process log entry. When the response body has no message the SDK sets it to null, and
+// AWS SDK errors make a poor process log entry. When the response body has no message, aws-sdk v2 sets it to null, and
 // it replaces each other body field with a "[field]" placeholder while hiding the field itself. Keep the fields a
 // reader can act on, and give the error a message when it has none.
+//
+// An aws-sdk v3 error with no message in the body gets "UnknownError" from smithy, and its HTTP status and request ID
+// sit only on $metadata, which sanitize in @turbot/utils redacts like every "$" key. Copy those two to the top level
+// so they reach the log, and build a message in place of "UnknownError".
 const normalizeError = (err) => {
   if (!_.isObject(err)) {
     return err;
@@ -507,16 +511,20 @@ const normalizeError = (err) => {
   // than recover the values.
   const fields = _.omitBy(err, (value, key) => ["message", "name", "stack"].includes(key) || /^\[.+\]$/.test(key));
 
+  const metadata = _.isObject(err.$metadata) ? err.$metadata : undefined;
+  const statusCode = err.statusCode || (metadata && metadata.httpStatusCode);
+  const requestId = err.requestId || (metadata && metadata.requestId);
+
   let message = err.message;
-  if (typeof message !== "string" || message === "") {
-    const details = _.compact([
-      err.statusCode && `HTTP ${err.statusCode}`,
-      err.requestId && `request ${err.requestId}`,
-    ]);
+  if (typeof message !== "string" || message === "" || (metadata && message === "UnknownError")) {
+    const details = _.compact([statusCode && `HTTP ${statusCode}`, requestId && `request ${requestId}`]);
     message = `${err.code || err.name || "Unknown error"}${details.length ? ` (${details.join(", ")})` : ""}`;
   }
 
-  return _.omitBy({ message, name: err.name, ...fields }, _.isUndefined);
+  return _.omitBy(
+    { message, name: err.name, ...fields, ...(statusCode && { statusCode }), ...(requestId && { requestId }) },
+    _.isUndefined
+  );
 };
 
 // Log an error to the process log. Its stack goes in a debug entry instead: for an SDK error it holds only SDK

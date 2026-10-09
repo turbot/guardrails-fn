@@ -13,7 +13,7 @@ never_run:                  # a run must never execute these
 
 checks:                     # cost is a rough guess in minutes
   lint: {run: "npx eslint index.js test", cost: 1, inputs: ["index.js", "test/**"]}
-  unit: {run: "npm test", cost: 1, inputs: ["index.js", "test/**"]}   # test/index.js needs @turbot/sdk-test
+  unit: {run: "npm test", cost: 1, inputs: ["index.js", "test/**"]}
 
 kinds:
   code: {paths: ["index.js", "test/**"], checks: [lint, unit], show: [test]}
