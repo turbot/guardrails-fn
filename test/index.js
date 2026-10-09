@@ -1,7 +1,4 @@
-const chai = require("chai");
-const { assert, expect } = chai;
-// This causes circular dependencies. Remove reference to sdk-test for now
-chai.use(require("@turbot/sdk-test").plugin);
+const { assert, expect } = require("chai");
 
 const tfn = require("..");
 
@@ -13,7 +10,7 @@ describe("@turbot/fn", function () {
     delete process.env.TURBOT_TEST;
   });
   it("has turbot variable", function (done) {
-    const wrappedFn = tfn((turbot) => (event, z, callback) => {
+    const wrappedFn = tfn((turbot, $, callback) => {
       assert.exists(turbot);
       assert.isFunction(turbot.ok);
       assert.isFunction(turbot.resource.create);
@@ -23,12 +20,29 @@ describe("@turbot/fn", function () {
   });
 
   it("turbot.ok works", function (done) {
-    const wrappedFn = tfn((turbot) => (event, context, callback) => {
+    const wrappedFn = tfn((turbot, $, callback) => {
       turbot.ok();
-      expect(turbot).to.be.ok;
-      expect(turbot).to.not.be.alarm;
       callback(null, true);
     });
-    wrappedFn({}, {}, done);
+    wrappedFn({}, {}, (err, output) => {
+      if (err) return done(new Error(err));
+      // In test mode the result carries the process event the handler sent back.
+      const states = output.turbot.payload.commands.map((command) => command.payload.state);
+      expect(states).to.deep.equal(["ok"]);
+      return done();
+    });
+  });
+
+  it("turbot.alarm does not set the state to ok", function (done) {
+    const wrappedFn = tfn((turbot, $, callback) => {
+      turbot.alarm();
+      callback(null, true);
+    });
+    wrappedFn({}, {}, (err, output) => {
+      if (err) return done(new Error(err));
+      const states = output.turbot.payload.commands.map((command) => command.payload.state);
+      expect(states).to.deep.equal(["alarm"]);
+      return done();
+    });
   });
 });
