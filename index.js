@@ -974,6 +974,9 @@ tfn.fnAsync = (asyncHandler) => {
 // Generic runner
 tfn.Run = Run;
 
+// Exposed for tests only; not part of the public API.
+tfn._expandEventData = expandEventData;
+
 // Allow the callback version to be the default require (mostly for backwards compatibility):
 //   tfn = require("@turbot/fn");
 //   exports.control = tfn((turbot, $) => {
