@@ -250,13 +250,25 @@ const expandEventData = (msgObj, callback) => {
           const file = fs.createWriteStream(largeParamFileName);
           const downloadStream = got.stream(largeParameterZipUrl);
 
+          // pipe() does not clean up when one side fails, so each error handler destroys the other stream, or its
+          // file descriptor or socket stays open until the process exits. Only the first outcome is passed on.
+          let settled = false;
+          const settle = (err) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            return cb(err, largeParamFileName);
+          };
+
           // Handle download stream errors
           downloadStream.on("error", (err) => {
             console.error("Error downloading large parameter", {
               url: largeParameterZipUrl,
               error: err,
             });
-            return cb(err, largeParamFileName);
+            file.destroy();
+            return settle(err);
           });
 
           // Handle file writing errors
@@ -265,13 +277,14 @@ const expandEventData = (msgObj, callback) => {
               file: largeParamFileName,
               error: err,
             });
-            return cb(err, largeParamFileName);
+            downloadStream.destroy();
+            return settle(err);
           });
 
           // Success case
           file.on("finish", () => {
             console.log("Large parameter file downloaded successfully", { largeParamFileName });
-            return cb(null, largeParamFileName);
+            return settle(null);
           });
 
           downloadStream.pipe(file);
