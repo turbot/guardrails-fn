@@ -19,3 +19,4 @@ kinds:
   code: {paths: ["index.js", "test/**"], checks: [lint, unit], show: [test]}
   deps: {paths: ["package.json", "package-lock.json"], checks: [unit], show: [output]}
   docs: {paths: ["**/*.md", ".claude/**", ".vscode/**", "LICENSE", ".gitignore"], show: [none]}
+  ci: {paths: [".github/**"], checks: [unit], show: [none]}
