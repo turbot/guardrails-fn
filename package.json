@@ -14,41 +14,33 @@
     "test": "npx mocha"
   },
   "dependencies": {
-    "@turbot/guardrails-aws-sdk-v3": "5.0.1",
-    "@aws-sdk/client-sns": "3.649.0",
-    "@aws-sdk/client-kms": "3.649.0",
+    "@aws-sdk/client-kms": "3.1149.0",
+    "@aws-sdk/client-sns": "3.1149.0",
     "@turbot/errors": "5.3.0",
+    "@turbot/guardrails-aws-sdk-v3": "5.1.1",
     "@turbot/log": "5.5.0",
-    "@turbot/sdk": "5.16.0",
-    "@turbot/utils": "5.6.0",
+    "@turbot/sdk": "5.16.1",
     "@turbot/sns-validator": "5.0.3",
-    "archiver": "5.3.0",
+    "@turbot/utils": "5.6.0",
+    "archiver": "5.3.2",
     "async": "^3.2.3",
     "extract-zip": "2.0.1",
-    "fs-extra": "10.0.0",
+    "fs-extra": "10.1.0",
     "got": "11.8.6",
     "lodash": "^4.18.1",
     "rimraf": "3.0.2",
-    "stream-buffers": "3.0.2",
+    "stream-buffers": "3.0.3",
     "tmp": "0.2.7",
     "url": "0.11.4"
   },
   "devDependencies": {
-    "chai": "4.3.10",
-    "eslint": "7.28.0",
-    "eslint-config-prettier": "8.3.0",
-    "eslint-plugin-prettier": "3.4.0",
-    "eslint-plugin-you-dont-need-lodash-underscore": "6.12.0",
+    "chai": "4.5.0",
+    "eslint": "7.32.0",
+    "eslint-config-prettier": "8.10.2",
+    "eslint-plugin-prettier": "3.4.1",
+    "eslint-plugin-you-dont-need-lodash-underscore": "6.14.0",
     "mocha": "12.0.3",
-    "prettier": "2.3.1"
-  },
-  "overrides": {
-    "@aws-sdk/core": {
-      "fast-xml-parser": "^4.5.7"
-    },
-    "@turbot/guardrails-aws-sdk-v3": {
-      "lodash": "$lodash"
-    }
+    "prettier": "2.8.8"
   },
   "eslintConfig": {
     "extends": [
