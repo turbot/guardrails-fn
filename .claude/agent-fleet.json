@@ -1,3 +1,7 @@
 {
-  "secrets": {}
+  "secrets": {},
+  "chores": {
+    "dependencies": { "when": "mon week 1" },
+    "flow-review": { "when": "mon weeks 1,2,3,4,5" }
+  }
 }
