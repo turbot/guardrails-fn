@@ -1,4 +1,4 @@
-# .claude/agent-fleet/inbox-gates.yml — turbot/guardrails-fn
+# Agent Fleet gate manifest — turbot/guardrails-fn
 #
 # What a change must run and show before an agent's PR counts as done.
 # An agent reads this through `agent-fleet gates owed`: it matches the changed files to
