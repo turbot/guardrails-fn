@@ -1,0 +1,19 @@
+# Every lockfile's Dependabot security PRs carry the fleet's labels, so Agent Fleet reviews
+# them. Grouping is the org/repo setting (Grouped security updates): one PR per package manager
+# and manifest directory. `open-pull-requests-limit: 0` keeps version-update PRs off; security
+# PRs still open. A labels list replaces Dependabot's defaults, so they are listed too.
+# Dependabot opens security PRs for every lockfile with an alert, listed here or not; listing a
+# folder is what gives its PRs the labels. A new lockfile goes in the list, or its PRs arrive
+# unlabelled and the fleet won't pick them up.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "agent:ready"
