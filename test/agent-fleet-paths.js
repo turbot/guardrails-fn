@@ -12,9 +12,10 @@ const NAMES = [
   "inbox-judgement.md",
   "inbox-intake.md",
   "self-review-checklist.md",
+  "agent-worker.json", // the declaration's old name, still read
 ];
 const HAND_TYPED = new RegExp(
-  "\\.claude/(?:agent-fleet/)?(?:" + NAMES.map((n) => n.replace(/\./g, "\\.")).join("|") + ")"
+  "\\.claude/(?:agent-fleet/|rules/)?(?:" + NAMES.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")"
 );
 
 // Repo-relative files whose subject is the location itself.
