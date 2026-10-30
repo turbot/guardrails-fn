@@ -16,9 +16,61 @@ const tmp = require("tmp");
 const url = require("url");
 const util = require("util");
 const MessageValidator = require("@turbot/sns-validator");
+const yauzl = require("yauzl");
 const validator = new MessageValidator();
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
 const { KMSClient, DecryptCommand } = require("@aws-sdk/client-kms");
+
+const ZIP_SYMLINK_MODE = 0o120000;
+const ZIP_FILE_TYPE_MASK = 0o170000;
+
+/**
+ * Unpacks a zip file into dir. An entry that would land outside dir is refused (yauzl checks every name), and so is a
+ * symbolic link, so an archive can never write or point anywhere but under dir.
+ */
+const unzip = (zipPath, dir) => {
+  return new Promise((resolve, reject) => {
+    yauzl.open(zipPath, { lazyEntries: true }, (openErr, zipfile) => {
+      if (openErr) {
+        return reject(openErr);
+      }
+      const fail = (err) => {
+        zipfile.close();
+        return reject(err);
+      };
+      const next = (err) => (err ? fail(err) : zipfile.readEntry());
+
+      zipfile.on("error", reject);
+      zipfile.on("end", resolve);
+      zipfile.on("entry", (entry) => {
+        const mode = (entry.externalFileAttributes >>> 16) & 0xffff;
+        if ((mode & ZIP_FILE_TYPE_MASK) === ZIP_SYMLINK_MODE) {
+          return fail(new Error(`Refusing to extract symbolic link ${entry.fileName}`));
+        }
+        const target = path.resolve(dir, entry.fileName);
+        if (target !== path.resolve(dir) && !target.startsWith(path.resolve(dir) + path.sep)) {
+          return fail(new Error(`Refusing to extract ${entry.fileName} outside ${dir}`));
+        }
+        if (entry.fileName.endsWith("/")) {
+          return fs.ensureDir(target, next);
+        }
+        return fs.ensureDir(path.dirname(target), (dirErr) => {
+          if (dirErr) {
+            return fail(dirErr);
+          }
+          return zipfile.openReadStream(entry, (readErr, readStream) => {
+            if (readErr) {
+              return fail(readErr);
+            }
+            // pipeline() destroys both streams when either fails, so neither stays open.
+            return pipeline(readStream, fs.createWriteStream(target), next);
+          });
+        });
+      });
+      zipfile.readEntry();
+    });
+  });
+};
 
 const cachedCredentials = new Map();
 
@@ -270,10 +322,7 @@ const expandEventData = (msgObj, callback) => {
       extract: [
         "downloadLargeParameterZip",
         (results, cb) => {
-          // Load extract package when it is required
-          const extract = require("extract-zip");
-
-          extract(results.downloadLargeParameterZip, { dir: results.tmpDir })
+          unzip(results.downloadLargeParameterZip, results.tmpDir)
             .then(() => {
               return cb(null, results.downloadLargeParameterZip);
             })

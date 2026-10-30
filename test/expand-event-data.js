@@ -24,6 +24,19 @@ const largeParameterZip = (largeInput) => {
   });
 };
 
+// Builds a zip of the given archiver calls, so a test can hold entries a Turbot archive never has.
+const zipWith = (build) => {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const archive = archiver("zip");
+    archive.on("data", (chunk) => chunks.push(chunk));
+    archive.on("end", () => resolve(Buffer.concat(chunks)));
+    archive.on("error", reject);
+    build(archive);
+    archive.finalize();
+  });
+};
+
 // An SNS-delivered Lambda event whose payload is a large parameter to be downloaded from the given URL.
 const largeParameterEvent = (url) => {
   const msgObj = { meta: {}, payload: { type: "large_parameter", s3PresignedUrlForParameterGet: url } };
@@ -192,6 +205,77 @@ describe("expandEventData large parameter download", function () {
         wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => done(err || new Error("ended")));
       })
       .catch(done);
+  });
+
+  it("expands a large parameter from an archive that also holds a folder and another file", function (done) {
+    zipWith((archive) => {
+      archive.append("", { name: "nested/" });
+      archive.append("not read", { name: "nested/other.txt" });
+      archive.append(JSON.stringify({ payload: { input: { nested: true } } }), { name: "large-input.json" });
+    })
+      .then((zip) => {
+        respond = (req, res) => res.end(zip);
+        const wrappedFn = tfn((turbot, $) => {
+          turbot.stop();
+          settle(done, () => {
+            expect($).to.deep.equal({ nested: true });
+          });
+        });
+        wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => done(err || new Error("ended")));
+      })
+      .catch(done);
+  });
+
+  it("refuses an archive that holds a symbolic link, and never creates it", function (done) {
+    zipWith((archive) => {
+      archive.symlink("link", "/etc/passwd");
+      archive.append(JSON.stringify({ payload: {} }), { name: "large-input.json" });
+    })
+      .then((zip) => {
+        respond = (req, res) => res.end(zip);
+        const wrappedFn = tfn(() => done(new Error("handler should not run when the archive is refused")));
+        wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
+          settle(done, () => {
+            expect(err).to.be.an("error");
+            expect(err.message).to.match(/symbolic link link/);
+            expect(fs.pathExistsSync(path.join(tmpDirs[0], "link"))).to.equal(false);
+          });
+        });
+      })
+      .catch(done);
+  });
+
+  it("refuses an archive entry that would land outside the folder, and never writes it", function (done) {
+    // Archiver cleans ../ out of a name, so the zip is built with a same-length name and patched to the escaping one,
+    // in both the entry header and the directory at the end of the file.
+    zipWith((archive) => archive.append("escaped", { name: "aa/escaped.txt" }))
+      .then((built) => {
+        const zip = Buffer.from(built.toString("latin1").split("aa/escaped.txt").join("../escaped.txt"), "latin1");
+        respond = (req, res) => res.end(zip);
+        const wrappedFn = tfn(() => done(new Error("handler should not run when the archive is refused")));
+        wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
+          // ../escaped.txt from the download folder is the folder that holds it.
+          const escapedFile = path.join(tmpDirs[0], "..", "escaped.txt");
+          const escaped = fs.pathExistsSync(escapedFile);
+          fs.removeSync(escapedFile);
+          settle(done, () => {
+            expect(err).to.be.an("error");
+            expect(err.message).to.match(/relative path/);
+            expect(escaped).to.equal(false);
+          });
+        });
+      })
+      .catch(done);
+  });
+
+  it("fails the expansion when the downloaded file is not a zip", function (done) {
+    respond = (req, res) => res.end("this is not a zip file");
+    const wrappedFn = tfn(() => done(new Error("handler should not run when the file is not a zip")));
+    wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
+      settle(done, () => {
+        expect(err).to.be.an("error");
+      });
+    });
   });
 
   it("closes the file write stream when the download fails", function (done) {
