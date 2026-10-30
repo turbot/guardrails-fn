@@ -260,9 +260,10 @@ describe("expandEventData large parameter download", function () {
       .then((built) => {
         const zip = Buffer.from(built.toString("latin1").split("aa/escaped.txt").join("../escaped.txt"), "latin1");
         respond = (req, res) => res.end(zip);
-        const wrappedFn = tfn(() =>
-          finish(() => done(new Error("handler should not run when the archive is refused")))
-        );
+        const wrappedFn = tfn(() => {
+          fs.removeSync(sandbox);
+          done(new Error("handler should not run when the archive is refused"));
+        });
         wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
           finish((escaped) => {
             expect(err).to.be.an("error");
