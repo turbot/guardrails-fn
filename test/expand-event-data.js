@@ -246,26 +246,35 @@ describe("expandEventData large parameter download", function () {
   });
 
   it("refuses an archive entry that would land outside the folder, and never writes it", function (done) {
+    // The download folder is made inside a sandbox the test owns, so a write beside it lands in the sandbox.
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "escape-"));
+    const finish = (assertions) => {
+      const escaped = fs.pathExistsSync(path.join(sandbox, "escaped.txt"));
+      fs.removeSync(sandbox);
+      settle(done, () => assertions(escaped));
+    };
+    tmp.dir = (opts, cb) => originalTmpDir({ ...opts, tmpdir: sandbox }, cb);
     // Archiver cleans ../ out of a name, so the zip is built with a same-length name and patched to the escaping one,
     // in both the entry header and the directory at the end of the file.
     zipWith((archive) => archive.append("escaped", { name: "aa/escaped.txt" }))
       .then((built) => {
         const zip = Buffer.from(built.toString("latin1").split("aa/escaped.txt").join("../escaped.txt"), "latin1");
         respond = (req, res) => res.end(zip);
-        const wrappedFn = tfn(() => done(new Error("handler should not run when the archive is refused")));
+        const wrappedFn = tfn(() =>
+          finish(() => done(new Error("handler should not run when the archive is refused")))
+        );
         wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => {
-          // ../escaped.txt from the download folder is the folder that holds it.
-          const escapedFile = path.join(tmpDirs[0], "..", "escaped.txt");
-          const escaped = fs.pathExistsSync(escapedFile);
-          fs.removeSync(escapedFile);
-          settle(done, () => {
+          finish((escaped) => {
             expect(err).to.be.an("error");
             expect(err.message).to.match(/relative path/);
             expect(escaped).to.equal(false);
           });
         });
       })
-      .catch(done);
+      .catch((e) => {
+        fs.removeSync(sandbox);
+        done(e);
+      });
   });
 
   it("fails the expansion when the downloaded file is not a zip", function (done) {
