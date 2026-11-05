@@ -442,8 +442,11 @@ const persistLargeCommands = (cargoContainer, opts, callback) => {
               },
             };
 
-            opts.log.debug("Options to put large commands", { options: reqOptions });
-            log.info("Saving large command with options", { options: reqOptions });
+            // The presigned URL's query string is the signature: anyone who reads it from a log can upload in
+            // place of this run. Log the path without it.
+            const loggedOptions = { ...reqOptions, path: urlOpts.pathname };
+            opts.log.debug("Options to put large commands", { options: loggedOptions });
+            log.info("Saving large command with options", { options: loggedOptions });
 
             const stream = fs.createReadStream(results.largeCommandZip);
 
