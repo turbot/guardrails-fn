@@ -14,6 +14,7 @@ const streamBuffers = require("stream-buffers");
 const taws = require("@turbot/guardrails-aws-sdk-v3");
 const tmp = require("tmp");
 const url = require("url");
+const yauzl = require("yauzl");
 const util = require("util");
 const MessageValidator = require("@turbot/sns-validator");
 const validator = new MessageValidator();
@@ -224,6 +225,79 @@ const initialize = (event, context, callback) => {
   });
 };
 
+const LARGE_INPUT_ENTRY = "large-input.json";
+
+// Reads large-input.json out of the downloaded zip, in memory. The zip comes from outside, so nothing in it is written
+// to disk: a symlink entry followed by a same-named file would otherwise write through the link to a path outside the
+// temp dir. Any symlink entry fails the read, and so does anything but a regular file named large-input.json.
+const readLargeInput = (zipPath, callback) => {
+  yauzl.open(zipPath, { lazyEntries: true }, (openErr, zipfile) => {
+    if (openErr) {
+      return callback(openErr);
+    }
+
+    let done = false;
+    const finish = (err, obj) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      zipfile.close();
+      return callback(err, obj);
+    };
+
+    let found = false;
+    let parsed;
+    zipfile.on("error", finish);
+    zipfile.on("end", () => {
+      if (!found) {
+        return finish(new Error(`${LARGE_INPUT_ENTRY} not found in the large parameter zip`));
+      }
+      return finish(null, parsed);
+    });
+    zipfile.on("entry", (entry) => {
+      // The Unix file type sits in the top bits of the external attributes; 0o120000 is a symlink.
+      const unixType = (entry.externalFileAttributes >>> 16) & 0o170000;
+      if (unixType === 0o120000) {
+        return finish(new Error(`The large parameter zip has a symlink entry: ${entry.fileName}`));
+      }
+      if (entry.fileName !== LARGE_INPUT_ENTRY) {
+        return zipfile.readEntry();
+      }
+      if (found) {
+        return finish(new Error(`The large parameter zip has more than one ${LARGE_INPUT_ENTRY}`));
+      }
+      if (unixType !== 0 && unixType !== 0o100000) {
+        return finish(new Error(`${LARGE_INPUT_ENTRY} in the large parameter zip is not a regular file`));
+      }
+      found = true;
+      zipfile.openReadStream(entry, (streamErr, stream) => {
+        if (streamErr) {
+          return finish(streamErr);
+        }
+        const chunks = [];
+        stream.on("data", (chunk) => chunks.push(chunk));
+        stream.on("error", finish);
+        stream.on("end", () => {
+          try {
+            // Same as fs.readJson: a leading byte order mark is skipped.
+            parsed = JSON.parse(
+              Buffer.concat(chunks)
+                .toString("utf8")
+                .replace(/^\uFEFF/, "")
+            );
+          } catch (parseErr) {
+            return finish(parseErr);
+          }
+          // Keep reading, so a later symlink or duplicate entry still fails the whole zip.
+          return zipfile.readEntry();
+        });
+      });
+    });
+    zipfile.readEntry();
+  });
+};
+
 const expandEventData = (msgObj, callback) => {
   const payloadType = _.get(msgObj, "payload.type");
   if (payloadType !== "large_parameter") {
@@ -267,29 +341,7 @@ const expandEventData = (msgObj, callback) => {
           });
         },
       ],
-      extract: [
-        "downloadLargeParameterZip",
-        (results, cb) => {
-          // Load extract package when it is required
-          const extract = require("extract-zip");
-
-          extract(results.downloadLargeParameterZip, { dir: results.tmpDir })
-            .then(() => {
-              return cb(null, results.downloadLargeParameterZip);
-            })
-            .catch((ex) => {
-              return cb(ex);
-            });
-        },
-      ],
-      parsedData: [
-        "extract",
-        (results, cb) => {
-          fs.readJson(path.resolve(results.tmpDir, "large-input.json"), (err, obj) => {
-            return cb(err, obj);
-          });
-        },
-      ],
+      parsedData: ["downloadLargeParameterZip", (results, cb) => readLargeInput(results.downloadLargeParameterZip, cb)],
     },
     (err, results) => {
       if (err) {

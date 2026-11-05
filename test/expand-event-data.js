@@ -24,6 +24,25 @@ const largeParameterZip = (largeInput) => {
   });
 };
 
+// Builds a zip from entries: { name, content } is a regular file, { name, symlink } a symlink to that target.
+const zipOf = (entries) => {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const archive = archiver("zip");
+    archive.on("data", (chunk) => chunks.push(chunk));
+    archive.on("end", () => resolve(Buffer.concat(chunks)));
+    archive.on("error", reject);
+    for (const entry of entries) {
+      if (entry.symlink) {
+        archive.symlink(entry.name, entry.symlink);
+      } else {
+        archive.append(entry.content, { name: entry.name });
+      }
+    }
+    archive.finalize();
+  });
+};
+
 // An SNS-delivered Lambda event whose payload is a large parameter to be downloaded from the given URL.
 const largeParameterEvent = (url) => {
   const msgObj = { meta: {}, payload: { type: "large_parameter", s3PresignedUrlForParameterGet: url } };
@@ -237,6 +256,119 @@ describe("expandEventData large parameter download", function () {
         return done(e);
       }
       serverSocketClosed.then(() => done(), done);
+    });
+  });
+
+  describe("reading large-input.json from the zip", function () {
+    let outsideDir;
+
+    beforeEach(function () {
+      outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "turbot-fn-outside-"));
+    });
+
+    afterEach(function () {
+      fs.removeSync(outsideDir);
+    });
+
+    // Serves the zip and runs the event through expandEventData; calls back with the error the Lambda gets, or with
+    // the payload input the handler gets.
+    const expand = (zip, cb) => {
+      respond = (req, res) => {
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/zip");
+        res.end(zip);
+      };
+      const wrappedFn = tfn((turbot, $) => {
+        turbot.stop();
+        cb(null, $);
+      });
+      wrappedFn(largeParameterEvent(`${baseUrl}/large-parameter.zip`), {}, (err) => cb(err || new Error("ended")));
+    };
+
+    const goodJson = JSON.stringify({ payload: { input: { fromLargeParameter: true } } });
+
+    it("fails on a symlink entry followed by a same-named file, and writes nothing outside the temp dir", function (done) {
+      const target = path.join(outsideDir, "escaped.txt");
+      zipOf([
+        { name: "link", symlink: target },
+        { name: "link", content: "written through the link" },
+        { name: "large-input.json", content: goodJson },
+      ])
+        .then((zip) =>
+          expand(zip, (err) => {
+            settle(done, () => {
+              expect(err).to.be.an("error");
+              expect(err.message).to.match(/symlink entry: link/);
+              expect(fs.existsSync(target)).to.equal(false);
+              expect(fs.readdirSync(outsideDir)).to.deep.equal([]);
+            });
+          })
+        )
+        .catch(done);
+    });
+
+    it("fails when large-input.json is itself a symlink", function (done) {
+      const target = path.join(outsideDir, "secret.json");
+      fs.writeJsonSync(target, { payload: { input: { stolen: true } } });
+      zipOf([{ name: "large-input.json", symlink: target }])
+        .then((zip) =>
+          expand(zip, (err, $) => {
+            settle(done, () => {
+              expect(err).to.be.an("error");
+              expect(err.message).to.match(/symlink entry/);
+              expect($).to.equal(undefined);
+            });
+          })
+        )
+        .catch(done);
+    });
+
+    it("fails when the zip has no large-input.json", function (done) {
+      zipOf([{ name: "other.json", content: goodJson }])
+        .then((zip) =>
+          expand(zip, (err) => {
+            settle(done, () => {
+              expect(err).to.be.an("error");
+              expect(err.message).to.match(/large-input.json not found/);
+            });
+          })
+        )
+        .catch(done);
+    });
+
+    it("fails when large-input.json is not valid JSON", function (done) {
+      zipOf([{ name: "large-input.json", content: "{not json" }])
+        .then((zip) =>
+          expand(zip, (err) => {
+            settle(done, () => {
+              expect(err).to.be.an("error");
+              expect(err).to.be.instanceOf(SyntaxError);
+            });
+          })
+        )
+        .catch(done);
+    });
+
+    it("fails when the download is not a zip", function (done) {
+      expand(Buffer.from("this is not a zip"), (err) => {
+        settle(done, () => expect(err).to.be.an("error"));
+      });
+    });
+
+    it("reads large-input.json and ignores the other entries", function (done) {
+      zipOf([
+        { name: "notes.txt", content: "not read" },
+        { name: "large-input.json", content: `\uFEFF${goodJson}` },
+      ])
+        .then((zip) =>
+          expand(zip, (err, $) => {
+            settle(done, () => {
+              expect(err).to.equal(null);
+              expect($).to.deep.equal({ fromLargeParameter: true });
+            });
+          })
+        )
+        .catch(done);
     });
   });
 });
