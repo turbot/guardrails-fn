@@ -134,6 +134,19 @@ const restoreCachedAWSEnvVars = () => {
   }
 };
 
+// The fields that say which run a log line is about. A failure is logged with these and never with the event or the
+// run's input: those hold the run's AWS credentials, which the log sanitizer does not reliably redact (it matches key
+// names, so it misses accessKeyId and anything inside a string such as the SNS Message).
+const runFields = (meta) => ({
+  resourceId: _.get(meta, "resourceId"),
+  processId: _.get(meta, "processId"),
+  actionId: _.get(meta, "actionId"),
+  controlId: _.get(meta, "controlId"),
+  policyId: _.get(meta, "policyValueId", _.get(meta, "policyId")),
+  tenant: _.get(meta, "tenantId"),
+  turbotVersion: _.get(meta, "turbotVersion"),
+});
+
 const initialize = (event, context, callback) => {
   const turbotOpts = {};
 
@@ -186,15 +199,7 @@ const initialize = (event, context, callback) => {
       );
     }
 
-    log.info("Received message", {
-      resourceId: _.get(msgObj, "meta.resourceId"),
-      processId: _.get(msgObj, "meta.processId"),
-      actionId: _.get(msgObj, "meta.actionId"),
-      controlId: _.get(msgObj, "meta.controlId"),
-      policyId: _.get(msgObj, "meta.policyValueId", _.get(msgObj, "meta.policyId")),
-      tenant: _.get(msgObj, "meta.tenantId"),
-      turbotVersion: _.get(msgObj, "meta.turbotVersion"),
-    });
+    log.info("Received message", runFields(_.get(msgObj, "meta")));
 
     expandEventData(msgObj, (err, updatedMsgObj) => {
       if (err) {
@@ -695,7 +700,7 @@ function tfn(handlerCallback) {
           );
         });
       } catch (err) {
-        console.error("Caught exception while executing the handler", { error: err, event, context });
+        log.error("Caught exception while executing the handler", { error: err, ...runFields(init.turbot.meta) });
 
         // Try our best - it should really call persist large command, but not much we can do here
         finalize(event, context, init, err, null, callback);
@@ -913,7 +918,7 @@ class Run {
       },
       (err, results) => {
         if (err) {
-          log.error("Error while running", { error: err, results: results });
+          log.error("Error while running", { error: err, ...runFields(_.get(results, "launchParameters.meta")) });
           if (results.turbot) {
             logError(results.turbot, "Error while running container", err);
             results.turbot.error("Error while running container");
