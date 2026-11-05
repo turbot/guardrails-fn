@@ -224,6 +224,17 @@ const initialize = (event, context, callback) => {
   });
 };
 
+// A presigned URL's query string holds its signature, which is a credential while the URL is unexpired. Log only where
+// it points.
+const urlForLog = (url) => {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  } catch (e) {
+    return "[unparseable url]";
+  }
+};
+
 const expandEventData = (msgObj, callback) => {
   const payloadType = _.get(msgObj, "payload.type");
   if (payloadType !== "large_parameter") {
@@ -256,7 +267,7 @@ const expandEventData = (msgObj, callback) => {
           pipeline(downloadStream, file, (err) => {
             if (err) {
               console.error("Error downloading large parameter", {
-                url: largeParameterZipUrl,
+                url: urlForLog(largeParameterZipUrl),
                 file: largeParamFileName,
                 error: err,
               });
@@ -293,7 +304,13 @@ const expandEventData = (msgObj, callback) => {
     },
     (err, results) => {
       if (err) {
-        console.error("Error while processing large parameter input", { error: err, msgObj });
+        // msgObj holds the presigned URL and the account's credentials, so log only the ids "Received message" logs.
+        console.error("Error while processing large parameter input", {
+          error: err,
+          processId: _.get(msgObj, "meta.processId"),
+          resourceId: _.get(msgObj, "meta.resourceId"),
+          controlId: _.get(msgObj, "meta.controlId"),
+        });
         return callback(err);
       }
 

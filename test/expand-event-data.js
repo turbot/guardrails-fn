@@ -1,4 +1,5 @@
 const http = require("http");
+const util = require("util");
 const os = require("os");
 const path = require("path");
 const asyncjs = require("async");
@@ -25,8 +26,8 @@ const largeParameterZip = (largeInput) => {
 };
 
 // An SNS-delivered Lambda event whose payload is a large parameter to be downloaded from the given URL.
-const largeParameterEvent = (url) => {
-  const msgObj = { meta: {}, payload: { type: "large_parameter", s3PresignedUrlForParameterGet: url } };
+const largeParameterEvent = (url, meta = {}) => {
+  const msgObj = { meta, payload: { type: "large_parameter", s3PresignedUrlForParameterGet: url } };
   return { Records: [{ Sns: { Message: JSON.stringify(msgObj) } }] };
 };
 
@@ -237,6 +238,65 @@ describe("expandEventData large parameter download", function () {
         return done(e);
       }
       serverSocketClosed.then(() => done(), done);
+    });
+  });
+  describe("failure logs", function () {
+    const signature = "SECRET-SIGNATURE-VALUE";
+    const credential = "SECRET-CREDENTIAL-VALUE";
+    const meta = { processId: "proc-1", resourceId: "res-1", controlId: "ctl-1", returnSnsArn: "arn:aws:sns:x:1:y" };
+    const query = `?X-Amz-Signature=${signature}&X-Amz-Credential=${credential}`;
+    let originalConsoleError, logged;
+
+    beforeEach(function () {
+      logged = [];
+      originalConsoleError = console.error;
+      console.error = (...args) => logged.push(util.inspect(args, { depth: null }));
+    });
+
+    afterEach(function () {
+      console.error = originalConsoleError;
+    });
+
+    // The wrapped function fails the invocation by calling back with an error; return once it has.
+    const runFailing = (url, done, check) => {
+      const wrappedFn = tfn(() => done(new Error("handler should not run when the download fails")));
+      wrappedFn(largeParameterEvent(url, meta), {}, (err) => {
+        console.error = originalConsoleError;
+        settle(done, () => {
+          expect(err).to.be.an("error");
+          check();
+        });
+      });
+    };
+
+    it("logs a failed download's origin and path, never its query string", function (done) {
+      respond = (req, res) => {
+        res.statusCode = 403;
+        res.end();
+      };
+      runFailing(`${baseUrl}/large-parameter.zip${query}`, done, () => {
+        const output = logged.join("\n");
+        expect(output).to.include(`${baseUrl}/large-parameter.zip`);
+        expect(output).to.not.include("X-Amz-");
+        expect(output).to.not.include(signature);
+        expect(output).to.not.include(credential);
+      });
+    });
+
+    it("logs the meta ids and not the message when processing the large parameter fails", function (done) {
+      respond = (req, res) => {
+        res.statusCode = 200;
+        res.end("not a zip");
+      };
+      runFailing(`${baseUrl}/large-parameter.zip${query}`, done, () => {
+        const failure = logged.find((line) => line.includes("Error while processing large parameter input"));
+        expect(failure).to.exist;
+        expect(failure).to.include("proc-1").and.to.include("res-1").and.to.include("ctl-1");
+        expect(failure).to.not.include("s3PresignedUrlForParameterGet");
+        expect(failure).to.not.include("returnSnsArn");
+        expect(logged.join("\n")).to.not.include(signature);
+        expect(logged.join("\n")).to.not.include("X-Amz-");
+      });
     });
   });
 });
