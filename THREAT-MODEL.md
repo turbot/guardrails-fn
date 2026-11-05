@@ -17,7 +17,7 @@ credentials. It has no network listener of its own.
 
 | Asset | Where it lives | Why it matters |
 |---|---|---|
-| Per-run AWS credentials for managed accounts | The SNS message's `credentials` (organization, organizational unit or account), then `AWS_ACCESS_KEY*`, `AWS_SECRET_*` and `AWS_SESSION_TOKEN` in `process.env` | They act in a customer's AWS account. |
+| Per-run AWS credentials for managed accounts | The SNS message's `credentials` (organization, organizational unit or account), then `AWS_ACCESS_KEY*`, `AWS_SECRET_*`, `AWS_SESSION_TOKEN` and `AWS_SECURITY_TOKEN` in `process.env` | They act in a customer's AWS account. |
 | Container role credentials | The ECS credentials endpoint (`http://169.254.170.2` + `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`), held in `_containerSnsParam` | They publish the run's result to SNS. |
 | Presigned S3 URLs | `s3PresignedUrlForParameterGet` (read) and `s3PresignedUrl` (write) | The signature in the query string is the credential. Anyone holding the URL can use it until it expires. |
 | The KMS data key and the decrypted container parameters | `envelope.$$dataKey` (KMS-encrypted) and `envelope.$$data` (AES-256-GCM) | The plaintext parameters can hold credentials and customer data. |
@@ -43,12 +43,13 @@ Input: `payload.s3PresignedUrlForParameterGet`, a URL taken from the (validated)
   would land outside that directory.
 - Only `large-input.json` is read from the extracted files. The directory is removed (`rimraf`) once the run has the
   data; on a failure it is left behind (`keep: true`).
-- The URL is used as given. The control that sends it is trusted to send a Turbot-issued URL, because the SNS message
-  that carries it is signed.
+- The URL is used as given. Turbot, which sends the message, is trusted to send a Turbot-issued URL, because the SNS
+  message that carries it is signed.
 
 ### 3. The presigned S3 PUT in `persistLargeCommands`
 
-Input: `s3PresignedUrl`, from the same message, where the run's large commands are written.
+Input: `meta.s3PresignedUrlLargeCommands` (passed on as `s3PresignedUrl`), where the run's large commands are written.
+In Lambda it comes from the same signed message; in a container, from the parameters document (boundary 4).
 
 - The only thing written is `large-commands.json`, zipped, with `content-length` taken from the file on disk.
 - The upload is a single PUT to the host and path of the presigned URL. The file's descriptor is closed whichever
@@ -88,9 +89,10 @@ them there. The process may be reused by Lambda for another run, so they must no
 - `@turbot/log` sanitizes each entry before it prints. It redacts by key name: `password`, `secretaccesskey`,
   `sessiontoken`, `token`, `key`, `privatekey` and the like, and anything starting with `$`. It does not look at
   values.
-- `console.log` and `console.error` in `index.js` are not sanitized. They are used for the large-parameter download
-  and the S3 and KMS failure paths.
-- The control's `turbot.log` goes through `@turbot/log`.
+- `console.log` and `console.error` in `index.js` are not sanitized. They are used for the large-parameter download,
+  the S3 and KMS failure paths and the handler crash path (see Known gaps).
+- The control's `turbot.log` is cleaned by `@turbot/sdk`'s logger with the same sanitizer, and goes to the process
+  log.
 
 ### 8. The fleet's own boundaries
 
@@ -110,8 +112,11 @@ These are weaker than the controls above. They are recorded here so a review doe
 - Presigned URLs are logged in full. `expandEventData` writes `largeParameterZipUrl` with `console.error` on a failed
   download (unsanitized), and `persistLargeCommands` logs `reqOptions`, whose `path` holds the signed query string,
   through `log.info` (the sanitizer does not match a `path` value).
-- `expandEventData` logs the whole `msgObj` with `console.error` when it fails, and the SNS validation failure logs the
-  whole `Sns` record. Either can hold the message body.
+- When the control's handler throws, the catch in the handler wrapper calls `console.error` with the whole `event`.
+  The SNS `Message` in it is a string holding the run's input, so the run's `accessKeyId`, `secretAccessKey` and
+  `sessionToken` print in plain text: key-name redaction does not reach inside a string, and `console.error` is not
+  sanitized at all. This is the most serious gap here.
+- `expandEventData` logs the whole `msgObj` with `console.error` when it fails. It can hold the message body.
 - On a failed `large_parameter` run the temporary directory is kept, with the downloaded zip in it, until the Lambda's
   storage is recycled.
 - `@turbot/log` redacts by key name only. `accessKeyId` is not in its list.
