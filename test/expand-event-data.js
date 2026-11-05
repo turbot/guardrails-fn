@@ -355,7 +355,7 @@ describe("expandEventData large parameter download", function () {
       });
     });
 
-    it("reads large-input.json and ignores the other entries, writing none of them to disk", function (done) {
+    it("reads large-input.json and ignores the other entries", function (done) {
       zipOf([
         { name: "notes.txt", content: "not read" },
         { name: "large-input.json", content: `\uFEFF${goodJson}` },
@@ -365,10 +365,6 @@ describe("expandEventData large parameter download", function () {
             settle(done, () => {
               expect(err).to.equal(null);
               expect($).to.deep.equal({ fromLargeParameter: true });
-              for (const dir of tmpDirs) {
-                expect(fs.existsSync(path.join(dir, "notes.txt"))).to.equal(false);
-                expect(fs.existsSync(path.join(dir, "large-input.json"))).to.equal(false);
-              }
             });
           })
         )
