@@ -6,6 +6,8 @@ const os = require("os");
 const path = require("path");
 const { expect } = require("chai");
 
+const turbotLog = require("@turbot/log");
+const { Turbot } = require("@turbot/sdk");
 const tfn = require("..");
 
 // Waits for an event, failing after a deadline rather than hanging the suite.
@@ -26,13 +28,14 @@ describe("large command upload", function () {
 
   // Runs a handler whose cargo holds large commands, so the run uploads them before it finishes. The commands are
   // random, so the zip stays about 1 MB: the upload then waits on the socket while the zip is still open.
-  const run = () =>
+  const run = (presignedUrl = "https://large-commands.test/upload?sig=1", onTurbot = () => {}) =>
     new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timed out waiting for the run to finish")), 10000);
       const event = {
-        meta: { s3PresignedUrlLargeCommands: "https://large-commands.test/upload?sig=1", processId: "p-24" },
+        meta: { s3PresignedUrlLargeCommands: presignedUrl, processId: "p-24" },
       };
       tfn((turbot, $, callback) => {
+        onTurbot(turbot);
         turbot.cargoContainer.largeCommands = {
           commands: [{ data: crypto.randomBytes(768 * 1024).toString("base64") }],
         };
@@ -166,5 +169,61 @@ describe("large command upload", function () {
 
     expect(opened).to.have.lengthOf(1);
     await expectZipsClosed();
+  });
+
+  describe("logging", function () {
+    const signedUrl =
+      "https://large-commands.test/bucket/key.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=deadbeef1234";
+
+    // Records everything the upload logs: through the module logger, and through the run's process log (turbot.log
+    // is a getter that builds a new object each time, so the process log is caught where it is written).
+    const recordLogs = () => {
+      const entries = [];
+      const originalLogger = Turbot.prototype._logger;
+      Turbot.prototype._logger = function (...args) {
+        entries.push(JSON.stringify(args));
+        return originalLogger.apply(this, args);
+      };
+      const originals = {};
+      ["info", "debug"].forEach((method) => {
+        originals[method] = turbotLog[method];
+        turbotLog[method] = (...args) => {
+          entries.push(JSON.stringify(args));
+          return originals[method].apply(turbotLog, args);
+        };
+      });
+      return {
+        entries,
+        restore: () => {
+          Turbot.prototype._logger = originalLogger;
+          ["info", "debug"].forEach((method) => (turbotLog[method] = originals[method]));
+        },
+      };
+    };
+
+    it("does not log the presigned URL's query string, but still sends it", async function () {
+      await startServer((req, res) => req.resume().on("end", () => res.end("ok")));
+      const logs = recordLogs();
+
+      try {
+        const err = await run(signedUrl);
+        expect(err).to.equal(null);
+      } finally {
+        logs.restore();
+      }
+
+      // The request still carries the signature, or S3 would refuse it.
+      expect(uploads).to.have.lengthOf(1);
+      expect(uploads[0].path).to.equal("/bucket/key.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=deadbeef1234");
+
+      // The path is logged, in both the module log and the process log, without the signature.
+      const logged = logs.entries.filter((entry) => entry.includes("/bucket/key.zip"));
+      expect(logged.some((entry) => entry.includes('"Saving large command with options"'))).to.equal(true);
+      expect(logged.some((entry) => entry.includes('"Options to put large commands"'))).to.equal(true);
+      logs.entries.forEach((entry) => {
+        expect(entry).to.not.include("X-Amz-Signature");
+        expect(entry).to.not.include("deadbeef1234");
+      });
+    });
   });
 });
