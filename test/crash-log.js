@@ -26,7 +26,9 @@ const input = () => ({ account: { credentials: { ...CREDENTIALS } }, item: { nam
 
 // An SNS-delivered Lambda event, the way Turbot starts a control: the run's input is inside the Message string.
 const snsEvent = () => ({
-  Records: [{ Sns: { MessageId: "sns-message-1", Message: JSON.stringify({ meta: META, payload: { input: input() } }) } }],
+  Records: [
+    { Sns: { MessageId: "sns-message-1", Message: JSON.stringify({ meta: META, payload: { input: input() } }) } },
+  ],
 });
 
 // The environment variables setAWSEnvVars writes. The run restores them only when it cached a value first, so a
@@ -206,7 +208,11 @@ describe("a handler crash in the log", function () {
           expectNoCredentials(capture.lines);
           const entry = entryFor(capture.lines, "Caught exception while executing the handler");
           expect(entry.error.message).to.equal("control blew up in test mode");
-          expect(entry).to.include({ resourceId: META.resourceId, processId: META.processId, controlId: META.controlId });
+          expect(entry).to.include({
+            resourceId: META.resourceId,
+            processId: META.processId,
+            controlId: META.controlId,
+          });
         });
       });
     });
@@ -245,7 +251,11 @@ describe("a handler crash in the log", function () {
           expectNoCredentials(capture.lines);
           const entry = entryFor(capture.lines, "Error while running");
           expect(entry.error.message).to.equal("container control blew up");
-          expect(entry).to.include({ resourceId: META.resourceId, processId: META.processId, controlId: META.controlId });
+          expect(entry).to.include({
+            resourceId: META.resourceId,
+            processId: META.processId,
+            controlId: META.controlId,
+          });
           expect(entry).to.not.have.any.keys("results");
         });
       new FailingRun().run();
