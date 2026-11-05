@@ -115,7 +115,7 @@ These are weaker than the controls above. They are recorded here so a review doe
 - When the control's handler throws, the catch in the handler wrapper calls `console.error` with the whole `event`.
   The SNS `Message` in it is a string holding the run's input, so the run's `accessKeyId`, `secretAccessKey` and
   `sessionToken` print in plain text: key-name redaction does not reach inside a string, and `console.error` is not
-  sanitized at all. This is the most serious gap here.
+  sanitized at all. This is the most serious gap here (tracked in #76).
 - `expandEventData` logs the whole `msgObj` with `console.error` when it fails. It can hold the message body.
 - On a failed `large_parameter` run the temporary directory is kept, with the downloaded zip in it, until the Lambda's
   storage is recycled.
